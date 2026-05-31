@@ -1,0 +1,409 @@
+# AgentPulse 需求文档
+
+## 1. 项目定位
+
+AgentPulse 不应只定位为 AI Coding 工具辅助器，而应定位为：
+
+> 面向本地 AI Agent、AI CLI、AI Coding 工具链的统一观测、通知、代理、审计、分析与插件平台。
+
+Codex、Claude Code、OpenCode 是第一批重点适配对象。后续也应支持 Hermes、OpenClaw、MCP 客户端、自动化 Agent、企业内部 AI CLI 等工具。
+
+当前产品主线应收敛为：
+
+1. 第一目标：通过 hook/回调/事件采集，让用户离开终端后仍能及时了解 AI Agent 任务进度。
+2. 第二目标：通过本地扫描建立 Skills/MCP/插件能力清单，避免完全依赖 Agent 自报。
+3. 第三目标：通过 Proxy、Transcript 和分析器补充上下文分析能力，用于风险、失败原因和质量复盘。
+
+## 2. 背景问题
+
+本地 AI Agent 工具越来越多，但它们普遍存在以下问题：
+
+1. 缺少统一事件视图
+   - 不同工具的 hook、日志、会话格式差异很大。
+   - 用户无法统一查看所有 AI Agent 的会话、请求、工具调用和错误。
+
+2. 缺少及时通知
+   - 长任务完成、权限请求、失败、危险操作等事件无法及时提醒用户。
+   - 团队场景下，也缺少钉钉、飞书、Webhook、Windows 桌面通知等统一渠道。
+
+3. Agent 能力清单不可靠
+   - 当前 Agent 加载了哪些 skills、MCP servers 和插件，不能只依赖 Agent 自报。
+   - Agent 可能因为 bug、上下文截断或配置读取异常漏报能力。
+   - 需要 AgentPulse 直接读取本地配置和文件目录建立事实基线。
+
+4. prompt 和 response 不可观测
+   - Hook 层不一定能拿到完整上下文。
+   - 本地 transcript 不一定存在，也不一定完整。
+   - 不同工具对请求和响应的记录能力不一致。
+
+5. 自动配置成本高
+   - 用户需要手动改 Codex、Claude Code、OpenCode 等工具配置。
+   - 不同工具配置位置、字段名、环境变量和协议都不同。
+
+6. 缺少安全与治理能力
+   - prompt 里可能包含密钥、内部域名、账号、业务数据。
+   - response 或工具调用可能包含危险命令。
+   - 团队缺少审计、策略、脱敏和统计能力。
+
+## 3. 核心用户
+
+### 3.1 个人开发者
+
+需要：
+
+- 统一查看本地 AI Agent 活动。
+- 长任务完成后收到通知。
+- 看到模型请求耗时、错误、上下文和回复。
+- 降低多个 AI 工具的配置成本。
+
+### 3.2 团队技术负责人
+
+需要：
+
+- 统一规范团队 AI 工具使用。
+- 发现高风险 prompt、危险命令、密钥泄露。
+- 汇总项目级 AI 使用情况。
+- 支持企业通知渠道和审计。
+
+### 3.3 插件开发者
+
+需要：
+
+- 扩展新的工具适配器。
+- 扩展通知渠道。
+- 扩展 prompt/response 分析器。
+- 扩展策略规则。
+
+## 4. 功能需求
+
+### 4.1 工具发现
+
+AgentPulse 启动或执行扫描命令时，应能检测当前系统或项目中已安装、已配置或可能使用的 AI Agent 工具。
+
+第一批目标：
+
+- Codex
+- Claude Code
+- OpenCode
+
+后续目标：
+
+- Hermes
+- OpenClaw
+- MCP 客户端
+- 企业内部 AI CLI
+
+扫描结果至少包含：
+
+- 工具名称
+- 工具版本，如果可获取
+- 配置文件位置
+- 当前模型请求路由方式
+- 是否已接入 AgentPulse
+- 可支持的接入方式：hook、proxy、transcript、plugin
+
+### 4.2 配置计划
+
+AgentPulse 不应静默修改第三方工具配置。必须先生成变更计划。
+
+计划内容包括：
+
+- 将修改哪些文件
+- 将新增或修改哪些字段
+- 当前值是什么
+- 新值是什么
+- 是否会创建备份
+- 是否会影响已有代理、环境变量或模型配置
+- 如何回滚
+
+推荐命令：
+
+```bash
+agent-pulse scan
+agent-pulse plan --proxy
+agent-pulse install --proxy
+agent-pulse rollback
+```
+
+### 4.3 Hook 事件采集
+
+Hook 层用于采集工具暴露出来的生命周期和行为事件。
+
+适合采集：
+
+- 会话开始
+- 会话结束
+- 用户提交 prompt
+- 工具调用前
+- 工具调用后
+- 权限请求
+- 命令执行结果
+- 失败事件
+- 长任务完成
+
+注意：Hook 层不应被假设为能拿到完整 prompt、完整上下文和完整 response。
+
+### 4.3.1 任务状态模型
+
+任务状态模型是低优先级但必须存在的前后端基础能力，第一版以最小成本实现即可。
+
+建议状态：
+
+- `created`
+- `running`
+- `waiting_input`
+- `tool_running`
+- `stalled`
+- `succeeded`
+- `failed`
+- `cancelled`
+- `unknown`
+
+第一版只需要根据 hook 事件和超时规则做粗粒度状态更新，不需要复杂进度百分比。
+
+#### 进程存活兜底
+
+任务完成/失败通知不能只依赖工具主动 fire hook。如果工具崩溃、被强制结束、或本身没有 `session.end` hook，任务会一直停在 `running`，用户收不到任何通知——这种静默漏报比没有通知更危险，因为用户会信任这套状态。
+
+因此第一版状态机除了 hook 事件和超时规则，还需要一条最小成本的进程存活兜底：
+
+- 任务尽量记录所属进程信息（hook payload 中的 pid/ppid，或 proxy 连接来源），无法获取时降级为弱关联。
+- 定期检查处于 `running`、`tool_running`、`waiting_input` 的任务，其所属进程是否仍存活。
+- 进程已不存在但没有收到终态 hook 时，将任务置为 `unknown`（若有错误证据则置为 `failed`），并触发"任务异常结束"通知，而不是无限期挂在 `running`。
+- 进程存活检查依赖 probes 层的 `ProcessProbe`（见 [本地探针与判断工具层方案](./06-local-probes-layer.md)），第一版只做"进程是否存在"这一最低能力。
+
+超时规则只能产生"可能卡住"（`stalled`），不能可靠产生"已完成"；进程兜底用于补上"已结束但 hook 缺失"的场景。
+
+### 4.3.2 回调注册协议
+
+回调注册协议是低优先级但需要保留边界的前后端能力，第一版以最小成本实现。
+
+第一版要求：
+
+- 提供统一 callback endpoint。
+- payload 至少包含 `eventId`、`source`、`eventType`、`timestamp`、`sessionId` 或 `taskId`。
+- 服务端按 `eventId` 做幂等。
+- 失败重试由调用方或 adapter best-effort 处理。
+- 本地 token、签名和复杂重试策略后续增强。
+
+### 4.4 本地请求代理
+
+AgentPulse 应启动本地服务，默认地址：
+
+```text
+http://localhost:8080
+```
+
+工具的模型请求应可以被路由到 AgentPulse 本地代理，再由 AgentPulse 转发到真实模型服务。
+
+代理层目标：
+
+- 捕获请求 body
+- 捕获响应 body
+- 支持流式响应
+- 支持错误透传
+- 支持耗时统计
+- 支持 token 和模型统计，如果可获取
+- 支持脱敏和按项目开关记录
+- 支持 OpenAI-compatible 协议
+- 支持 Anthropic-compatible 协议
+
+推荐接口：
+
+```text
+ANY  /proxy/openai/*
+ANY  /proxy/anthropic/*
+ANY  /proxy/codex/*
+ANY  /proxy/claude-code/*
+ANY  /proxy/opencode/*
+POST /ingest/hook/:integration/:event
+GET  /api/events
+GET  /api/sessions
+GET  /api/config
+```
+
+### 4.5 Transcript 导入
+
+Transcript 层用于读取工具本地会话记录、日志或导出文件。
+
+该能力只作为补充能力，不作为主路径。
+
+原因：
+
+- 不是所有工具都有 transcript。
+- transcript 路径、格式、权限可能变化。
+- 记录可能不完整。
+- 读取本地文件存在隐私风险。
+
+### 4.6 通知渠道
+
+通知渠道应独立为子包，支持插件化。
+
+第一批建议：
+
+- Webhook
+- Windows 桌面通知
+- 钉钉
+- 飞书
+
+通知事件示例：
+
+- 会话完成
+- 任务失败
+- 需要用户确认
+- 高风险命令
+- 检测到疑似密钥泄露
+- 代理转发失败
+- 工具配置失效
+
+### 4.7 分析器
+
+分析器应以标准事件为输入，而不是直接绑定某个工具。
+
+第一批分析器：
+
+- 敏感信息检测
+- 危险命令检测
+- prompt 长度分析
+- response 错误分析
+- 模型请求耗时分析
+- 成本估算，如果可获取 token 信息
+
+后续分析器：
+
+- prompt 质量评分
+- 失败原因归因
+- 工具行为画像
+- 团队使用统计
+- 项目知识沉淀
+
+### 4.8 Web 页面
+
+Web 页面用于配置和数据展示。
+
+第一版页面建议包含：
+
+- 工具发现状态
+- Hook 安装状态
+- Proxy 接入状态
+- 通知渠道配置
+- 最近事件流
+- 会话列表
+- 请求和响应详情
+- 风险事件列表
+- 插件列表
+
+### 4.9 插件系统
+
+插件应允许用户扩展以下能力：
+
+- 新工具 integration
+- 新通知 channel
+- 新 analyzer
+- 新 policy
+- 新 storage，可选
+- 新 UI widget，可选
+
+插件第一版可以只支持：
+
+- channel 插件
+- analyzer 插件
+- integration 插件
+
+## 5. 非功能需求
+
+### 5.1 本地优先
+
+默认所有数据存储在本地，不主动上传。
+
+推荐第一版使用 SQLite。
+
+### 5.2 隐私保护
+
+默认开启敏感信息脱敏。
+
+需要支持：
+
+- API Key 脱敏
+- Token 脱敏
+- 邮箱脱敏
+- 手机号脱敏
+- 内部域名脱敏，可配置
+- `.env` 内容保护
+- 请求体和响应体可关闭记录
+
+### 5.3 可回滚
+
+任何自动修改第三方工具配置的行为都必须：
+
+- 生成计划
+- 创建备份
+- 记录变更
+- 支持回滚
+
+### 5.4 可扩展
+
+核心模块不得绑定 Codex、Claude Code 或 OpenCode。
+
+所有工具差异应封装在 integration adapter 中。
+
+### 5.5 兼容流式响应
+
+代理层必须支持 SSE、chunked response 和客户端取消。
+
+AI Coding 或 Agent 工具通常依赖 streaming，如果代理处理不好，会直接影响工具体验。
+
+## 6. MVP 范围
+
+第一版建议只做：
+
+- pnpm monorepo
+- CLI
+- 本地 server
+- SQLite storage
+- Web 页面基础版
+- Codex integration
+- Claude Code integration
+- OpenCode integration，可稍后补
+- Webhook channel
+- Windows message channel
+- Basic analyzer
+- Skills/MCP 本地盘点
+- Probes 本地探针层
+- scan / plan / install / start / rollback 命令
+
+第一版可选做：
+
+- Proxy 支持 OpenAI-compatible 和 Anthropic-compatible
+- prompt/response 分析
+- transcript 导入
+
+暂不做：
+
+- 团队 SaaS
+- 云端同步
+- 复杂权限系统
+- 完整 token 计费系统
+- 所有工具的 transcript 解析
+- 自动静默修改配置
+
+## 7. 补充需求：Skills 和 MCP 本地盘点
+
+AgentPulse 需要独立检查当前 Agent 加载或可能加载的 skills、MCP servers、插件和相关配置。这个能力不应依赖 Agent 的 prompt、hook payload 或自报结果，而应通过读取本地文件目录和配置文件建立事实基线。
+
+目标：
+
+- 发现当前 workspace、用户级、全局级配置中的 skills。
+- 发现当前 workspace、用户级、全局级配置中的 MCP servers。
+- 记录每个 skill/MCP 的来源路径、启用状态、配置摘要和最后修改时间。
+- 对比 Agent 自报能力与本地扫描结果，发现遗漏、不一致或疑似加载失败。
+- 为后续分析 skills/MCP 的实际使用情况提供基线。
+
+MVP 应加入：
+
+- `agent-pulse inventory`
+- `GET /api/inventory`
+- `GET /api/inventory/skills`
+- `GET /api/inventory/mcp-servers`
+
+详细方案见 [Skills 和 MCP 本地盘点方案](./05-skills-mcp-inventory.md)。

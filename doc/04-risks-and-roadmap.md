@@ -1,0 +1,594 @@
+# AgentPulse 风险、注意项与开发计划
+
+## 1. 关键结论
+
+AgentPulse 的推荐架构是：
+
+> Hook/通知优先、Inventory/Probes 建立本地事实基线、Proxy 做上下文增强、Transcript 兜底导入。
+
+核心注意事项：
+
+- 不要假设所有工具都有统一 `entrypoint`。
+- 不要假设 hook 能拿到完整 prompt 和 response。
+- 不要把 transcript 作为主路径。
+- 不要静默修改第三方工具配置。
+- Proxy 如果进入实现范围，必须支持 streaming。
+- 默认本地存储，默认脱敏。
+
+## 2. 主要风险
+
+### 2.1 工具配置差异
+
+不同工具配置方式差异很大。
+
+可能出现：
+
+- 配置文件路径不同。
+- 字段名不同。
+- 用户级和项目级配置同时存在。
+- 环境变量优先级高于配置文件。
+- 启动参数覆盖配置文件。
+- 工具版本升级导致字段变化。
+
+应对方案：
+
+- 每个 integration adapter 独立处理工具配置。
+- adapter 声明兼容版本。
+- scan 阶段输出配置来源和优先级。
+- install 前展示计划。
+- apply 前备份。
+- 支持 rollback。
+
+### 2.2 Proxy 不能覆盖所有流量
+
+有些工具可能不支持配置 base URL。
+
+有些工具可能：
+
+- 写死官方 API 地址。
+- 使用系统代理。
+- 使用 OAuth 登录后的专用通道。
+- 使用 WebSocket。
+- 对 TLS 或 host 有校验。
+
+应对方案：
+
+- 首选 base URL / provider 配置。
+- 其次使用工具支持的 proxy 配置。
+- 再考虑 HTTP_PROXY/HTTPS_PROXY。
+- 最后考虑 wrapper 模式。
+- 不承诺所有工具都能完整代理。
+
+### 2.3 Streaming 兼容性
+
+AI Agent 工具大量依赖 streaming。
+
+风险：
+
+- SSE 格式损坏。
+- chunk 被缓冲导致延迟。
+- 客户端取消无法传播到上游。
+- 响应记录影响转发性能。
+- gzip/br 压缩导致捕获困难。
+
+应对方案：
+
+- 第一版就做流式透传测试。
+- 捕获响应时采用旁路缓冲，不阻塞下游。
+- 对大响应进行截断。
+- 保留原始 header。
+- 对取消事件做上游 abort。
+
+### 2.4 隐私和安全
+
+AgentPulse 会看到高度敏感数据。
+
+包括：
+
+- API Key
+- OAuth token
+- session token
+- 源代码
+- prompt
+- response
+- 内部服务地址
+- 数据库连接串
+- `.env` 内容
+
+应对方案：
+
+- 默认本地存储。
+- 默认不上传。
+- 默认脱敏。
+- 支持关闭 body 记录。
+- 支持按项目配置采集级别。
+- UI 默认隐藏敏感字段。
+- 日志禁止打印明文 key。
+
+### 2.5 自动修改配置的信任问题
+
+用户通常不希望工具静默修改自己的配置。
+
+应对方案：
+
+- 永远先 plan。
+- 明确展示变更文件。
+- 明确展示 before/after。
+- 创建备份。
+- 支持 rollback。
+- 提供 `agent-pulse doctor` 检查状态。
+
+### 2.6 Transcript 不稳定
+
+Transcript 可能：
+
+- 不存在。
+- 路径变化。
+- 格式变化。
+- 权限不足。
+- 只记录部分内容。
+
+应对方案：
+
+- transcript import 标记为 best-effort。
+- UI 上标记数据来源。
+- 不依赖 transcript 完成核心功能。
+
+### 2.7 插件安全
+
+插件可能执行任意代码。
+
+风险：
+
+- 读取敏感文件。
+- 上传 prompt 和 response。
+- 修改本地配置。
+- 阻塞主进程。
+
+应对方案：
+
+- 插件 manifest 声明权限。
+- 第一版只允许本地显式安装插件。
+- 插件运行失败不能拖垮主服务。
+- 插件发送外部请求需要可见配置。
+- 后续考虑 sandbox worker。
+
+### 2.8 Hook 漏报与任务静默失败
+
+AgentPulse 第一目标是"离开终端也能知道任务结束"，但完成/失败事件依赖工具主动 fire hook。
+
+风险：
+
+- 工具崩溃、被 `Ctrl-C`、被 kill 时可能不发终态 hook。
+- 有些工具根本没有 `session.end` 或等价 hook。
+- 任务会一直停在 `running`，用户收不到通知，并误以为任务仍在进行。
+- 静默漏报比"没有通知"更危险，因为用户会信任这套状态。
+
+应对方案：
+
+- 不把 hook 当作唯一的任务终态来源。
+- 增加超时规则，将长时间无事件的任务标记为 `stalled`。
+- 增加进程存活兜底：所属进程消失但无终态 hook 时，置为 `unknown` 并通知"任务异常结束"。
+- 将 `ProcessProbe`（进程是否存在）纳入 MVP probes 能力。
+- 详见 [需求文档 4.3.1](./01-requirements.md) 的进程存活兜底。
+
+## 3. 数据采集级别
+
+建议提供项目级采集配置：
+
+```ts
+export type CaptureLevel =
+  | 'metadata-only'
+  | 'redacted-body'
+  | 'full-body'
+  | 'disabled';
+```
+
+说明：
+
+- `metadata-only`：只记录模型、耗时、状态码、大小、错误。
+- `redacted-body`：记录脱敏后的请求和响应。
+- `full-body`：记录完整内容，仅适合个人本地使用。
+- `disabled`：不记录该项目请求。
+
+默认值应为：
+
+```text
+redacted-body
+```
+
+如果用户更保守，可以默认：
+
+```text
+metadata-only
+```
+
+## 4. 通知策略
+
+不要所有事件都通知，否则用户会被打扰。
+
+第一版推荐通知：
+
+- 任务完成
+- 任务失败
+- 需要用户确认
+- 高风险命令
+- 疑似密钥泄露
+- 代理错误
+- 配置异常
+
+通知策略应可配置：
+
+```ts
+export interface NotificationRule {
+  id: string;
+  name: string;
+  enabled: boolean;
+  eventTypes: string[];
+  minRiskLevel?: RiskLevel;
+  channels: string[];
+  cooldownSeconds?: number;
+}
+```
+
+## 5. Web 页面注意项
+
+Web 页面是工具型产品，不是营销页。
+
+第一版布局建议：
+
+- 左侧导航
+- 顶部工具状态
+- 主区域事件流
+- 详情抽屉或详情页
+
+页面：
+
+- Dashboard
+- Integrations
+- Sessions
+- Events
+- Proxy Requests
+- Analysis
+- Channels
+- Settings
+
+设计注意：
+
+- 信息密度要高。
+- 不要用大面积宣传式 hero。
+- 关键状态要一眼能看到。
+- 请求和响应详情默认折叠敏感字段。
+- 风险事件要突出。
+
+## 6. 开发阶段计划
+
+### 第 0 阶段：仓库骨架
+
+目标：
+
+- 建立 pnpm monorepo。
+- 建立基础 TypeScript 配置。
+- 建立 CLI、server、web、core 包。
+
+交付：
+
+- `pnpm-workspace.yaml`
+- `apps/cli`
+- `apps/server`
+- `apps/web`
+- `packages/core`
+- 基础 lint/test/build 脚本
+
+验收：
+
+- `pnpm install` 成功。
+- `pnpm build` 成功。
+- CLI 可以输出版本号。
+- Server 可以启动并返回 health check。
+
+### 第 1 阶段：事件模型和本地服务
+
+目标：
+
+- 实现标准事件模型。
+- 实现 hook ingest。
+- 实现最小任务状态模型。
+- 实现 SQLite 存储。
+- 实现 Web 事件流展示。
+- 实现 Webhook 或 Windows 通知中的至少一个。
+- 实现基于超时和进程存活的任务终态兜底。
+
+交付：
+
+- `POST /ingest/hook/:integration/:event`
+- `GET /api/events`
+- SQLite events 表
+- Web events 页面
+- 最小通知 channel
+
+验收：
+
+- 手动 curl 可以写入事件。
+- Web 页面可以看到事件。
+- 事件包含 source、eventType、timestamp、raw、normalized。
+- 任务完成、失败、等待确认等事件可以触发通知。
+- 工具未发终态 hook 时，超时或进程消失能把任务推进到终态并通知。
+
+### 第 2 阶段：Integration 扫描和安装计划
+
+目标：
+
+- 实现 integration adapter 接口。
+- 实现 Codex 和 Claude Code 的 detect。
+- 实现 scan 和 plan 命令。
+- 实现 inventory/probes 初版。
+
+交付：
+
+- `agent-pulse scan`
+- `agent-pulse plan --proxy`
+- Codex adapter
+- Claude Code adapter
+- `packages/inventory`
+- `packages/probes`
+- `agent-pulse inventory`
+
+验收：
+
+- 能识别当前系统中的工具配置。
+- 能生成明确的配置变更计划。
+- 不实际修改配置。
+- 能扫描当前 Agent 相关 skills/MCP 配置。
+- 能展示来源路径和脱敏后的配置摘要。
+
+### 第 3 阶段：配置应用和回滚
+
+目标：
+
+- 实现备份。
+- 实现 install。
+- 实现 rollback。
+
+交付：
+
+- `agent-pulse install --proxy`
+- `agent-pulse rollback`
+- backups 表或备份目录
+
+验收：
+
+- install 前自动备份。
+- install 后工具配置指向 AgentPulse。
+- rollback 后恢复原配置。
+
+### 第 4 阶段：通知规则和 Web 完善
+
+目标：
+
+- 完善通知规则。
+- 完善 Web 状态展示。
+- 支持基本 callback 幂等。
+
+交付：
+
+- 通知规则配置
+- task/session 状态视图
+- callback eventId 幂等处理
+
+验收：
+
+- 用户能配置哪些事件需要通知。
+- Web 能展示任务状态。
+- 重复 callback 不会重复创建事件。
+
+### 第 5 阶段：Proxy MVP
+
+目标：
+
+- 实现 OpenAI-compatible proxy。
+- 实现 Anthropic-compatible proxy。
+- 支持非流式和流式请求。
+- 存储请求和响应摘要。
+
+交付：
+
+- `ANY /proxy/openai/*`
+- `ANY /proxy/anthropic/*`
+- proxy_requests 表
+- proxy_responses 表
+
+验收：
+
+- OpenAI-compatible 请求可正常转发。
+- Anthropic-compatible 请求可正常转发。
+- SSE 响应可正常透传。
+- UI 可查看请求摘要。
+
+### 第 6 阶段：更多通知渠道
+
+目标：
+
+- 扩展 channel 接口。
+- 实现更多通知渠道。
+
+交付：
+
+- `packages/channels/webhook`
+- `packages/channels/windows-message`
+- 通知规则配置
+
+验收：
+
+- 高风险事件触发通知。
+- 任务完成触发通知。
+- Web 页面可以测试通知渠道。
+
+### 第 7 阶段：基础分析器
+
+目标：
+
+- 实现 basic analyzer。
+- 实现 security analyzer 初版。
+
+交付：
+
+- 敏感信息检测
+- 危险命令检测
+- 长 prompt 检测
+- 请求失败归类
+
+验收：
+
+- 检测到 API Key 样式字符串时标记高风险。
+- 检测到危险命令时标记高风险。
+- 分析结果能显示在 Web 页面。
+
+### 第 8 阶段：插件 SDK
+
+目标：
+
+- 支持本地插件加载。
+- 支持 channel 和 analyzer 插件。
+
+交付：
+
+- `packages/plugin-sdk`
+- 插件 manifest
+- example-channel
+- example-analyzer
+
+验收：
+
+- 用户可以添加本地插件。
+- 插件能发送通知或生成分析结果。
+- 插件失败不会导致 server 崩溃。
+
+### 第 9 阶段：更多工具适配
+
+目标：
+
+- 支持 OpenCode。
+- 调研 Hermes 和 OpenClaw。
+- 增加 agent-cli integration 类型。
+
+交付：
+
+- OpenCode adapter
+- Hermes adapter skeleton
+- OpenClaw adapter skeleton
+
+验收：
+
+- OpenCode 可 scan / plan / install。
+- Hermes / OpenClaw 至少能 detect 或输出不支持原因。
+
+## 7. MVP 推荐命令
+
+第一版 CLI 只需要：
+
+```bash
+agent-pulse scan
+agent-pulse plan
+agent-pulse install
+agent-pulse start
+agent-pulse rollback
+agent-pulse doctor
+```
+
+命令说明：
+
+- `scan`：扫描本机和当前项目的 AI Agent 工具。
+- `plan`：生成接入计划，不修改任何文件。
+- `install`：备份并应用接入计划。
+- `start`：启动本地服务。
+- `rollback`：回滚最近一次配置修改。
+- `doctor`：检查服务、配置、端口、代理、通知是否正常。
+
+## 8. 第一版不建议做的事
+
+第一版不要做：
+
+- 云端团队版。
+- 复杂账号系统。
+- 所有工具的一次性全量适配。
+- 完整成本计费平台。
+- 自动静默修改配置。
+- 默认保存完整 prompt 和 response。
+- 插件市场。
+- 强制拦截系统所有网络流量。
+
+## 9. 给后续 AI 开发的实现原则
+
+后续 AI 开发代码时应遵守：
+
+1. 先实现核心抽象，再实现具体工具适配。
+2. 所有配置修改必须有 plan、backup、rollback。
+3. 不要把 Codex、Claude Code、OpenCode 的特殊逻辑写入 core。
+4. Proxy 如果进入实现范围，必须从第一版支持 streaming。
+5. 日志不要输出明文密钥。
+6. UI 默认隐藏敏感字段。
+7. Transcript 是补充，不是主路径。
+8. 插件能力先小后大。
+9. 所有 analyzer 输入标准事件。
+10. 所有 channel 输出统一通知结果。
+
+## 10. 推荐验收清单
+
+MVP 完成时至少满足：
+
+- 可以启动 `http://localhost:8080`。
+- 可以通过 CLI 扫描 Codex 和 Claude Code。
+- 可以生成代理配置计划。
+- 可以备份并修改配置。
+- 可以回滚配置。
+- 可以在 Web 页面查看事件。
+- 可以发送 Webhook 或 Windows 通知。
+- 可以检测基础敏感信息。
+- 可以关闭请求体和响应体记录。
+- 可以扫描当前 Agent 相关 skills/MCP 配置。
+- 可以展示来源路径和脱敏后的 MCP env keys。
+
+Proxy 可选验收：
+
+- 可以代理 OpenAI-compatible 请求。
+- 可以代理 Anthropic-compatible 请求。
+- 可以正常透传流式响应。
+
+## 11. 补充风险：Agent 自报能力不可信
+
+Agent 可能因为 bug、上下文截断、配置读取异常或提示词遗漏，错误地报告当前加载的 skills、MCP servers 或插件。
+
+AgentPulse 应增加本地 inventory scanner，直接读取本地文件系统和配置文件，建立独立事实基线。
+
+MVP 验收应补充：
+
+- 可以扫描当前 Agent 相关 skills。
+- 可以扫描当前 Agent 相关 MCP server 配置。
+- 可以展示配置来源路径。
+- 可以展示脱敏后的 MCP env keys。
+- 可以对比 Agent 自报能力和本地扫描结果。
+
+详细方案见 [Skills 和 MCP 本地盘点方案](./05-skills-mcp-inventory.md)。
+
+## 12. 低优先级最小实现项
+
+以下能力属于前后端基础功能，保留边界，但第一版用最小成本实现：
+
+- 任务状态模型：只需要粗粒度状态，不需要百分比进度。
+- 回调注册协议：只需要统一 endpoint、基础 payload、eventId 幂等。
+- 本地服务安全：默认绑定 `127.0.0.1`，生成本地 token，限制 CORS；复杂签名和权限系统后续再做。
+
+## 13. 待办事项
+
+以下问题暂时记录，不进入第一版强需求：
+
+1. MCP 主动探测
+   - 是否尝试启动或连接 MCP server 来获取 tools/resources/prompts。
+   - 如何避免主动探测带来副作用。
+   - 是否需要用户确认或 sandbox。
+
+2. 命令探针安全边界
+   - command probe 是否只允许 `which`。
+   - 版本探测是否需要 adapter allowlist。
+   - 如何限制 timeout、参数拼接和副作用命令。

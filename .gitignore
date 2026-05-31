@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.turbo/
+.vite/
+coverage/
+.agent-pulse/
+*.log
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
