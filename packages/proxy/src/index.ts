@@ -1,5 +1,5 @@
 import { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import { newId, nowIso, ProxyRequestRecord, redactSecrets, summarizeUnknown } from '@agent-pulse/core';
+import { newId, nowIso, ProxyRequestRecord, ProxyRouteMapping, redactSecrets, summarizeUnknown } from '@agent-pulse/core';
 import { AgentPulseStorage } from '@agent-pulse/storage';
 
 export interface RegisterProxyOptions {
@@ -7,10 +7,21 @@ export interface RegisterProxyOptions {
 }
 
 export function registerProxyRoutes(app: FastifyInstance, options: RegisterProxyOptions): void {
+  refreshProxyRouteMappings(options.storage);
   app.all('/proxy/openai/*', (request, reply) => handleProxy('openai', request, reply, options.storage));
   app.all('/proxy/anthropic/*', (request, reply) => handleProxy('anthropic', request, reply, options.storage));
   app.all('/proxy/codex/*', (request, reply) => handleProxy('codex', request, reply, options.storage));
   app.all('/proxy/claude-code/*', (request, reply) => handleProxy('claude-code', request, reply, options.storage));
+}
+
+const routeMappings = new Map<string, ProxyRouteMapping>();
+
+export function refreshProxyRouteMappings(storage: AgentPulseStorage): void {
+  routeMappings.clear();
+  for (const mapping of storage.listProxyRouteMappings()) {
+    routeMappings.set(mapping.integration, mapping);
+    routeMappings.set(String(mapping.provider), mapping);
+  }
 }
 
 async function handleProxy(
@@ -20,6 +31,7 @@ async function handleProxy(
   storage: AgentPulseStorage
 ): Promise<void> {
   const started = Date.now();
+  refreshProxyRouteMappings(storage);
   const upstreamBase = resolveUpstream(provider);
   const suffix = request.url.replace(/^\/proxy\/[^/]+/, '');
   const upstreamUrl = `${upstreamBase.replace(/\/$/, '')}${suffix || '/'}`;
@@ -79,6 +91,8 @@ function baseRecord(
 }
 
 function resolveUpstream(provider: ProxyRequestRecord['provider']): string {
+  const mapped = routeMappings.get(provider);
+  if (mapped?.upstreamBaseUrl) return mapped.upstreamBaseUrl;
   if (provider === 'anthropic' || provider === 'claude-code') {
     return process.env.AGENT_PULSE_ANTHROPIC_UPSTREAM || 'https://api.anthropic.com';
   }

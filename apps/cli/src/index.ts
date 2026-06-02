@@ -59,7 +59,7 @@ program
     if (plans.length === 0) {
       plans = await planInstall({ workspaceDir: process.cwd(), scope: options.scope, storage });
     }
-    const results = plans.map((plan) => applyInstall(plan, { scope: options.scope, yes: options.yes, storage }));
+    const results = await Promise.all(plans.map((plan) => applyInstall(plan, { scope: options.scope, yes: options.yes, storage })));
     storage.close();
     printJson(results);
   });

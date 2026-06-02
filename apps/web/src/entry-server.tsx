@@ -1,6 +1,7 @@
 import { renderToString } from 'react-dom/server';
 import { QueryClient } from '@tanstack/react-query';
 import { Root } from './Root';
+import 'antd/dist/reset.css';
 import './styles.css';
 
 export function render(_url: string): string {

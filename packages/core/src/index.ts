@@ -157,6 +157,49 @@ export interface PlanRisk {
   message: string;
 }
 
+export type ConfigPatchFormat = 'json' | 'jsonc' | 'toml' | 'text';
+export type ConfigPatchWriteMode = 'replace' | 'merge' | 'structured-patch';
+export type ProxyStreamingMode = 'passthrough' | 'capture-summary' | 'capture-chunks';
+
+export interface AgentConfigRouteState {
+  integration: string;
+  routed: boolean;
+  configPath?: string;
+  currentBaseUrl?: string;
+  originalUpstream?: string;
+  confidence: 'low' | 'medium' | 'high';
+  warnings: string[];
+  summary?: Record<string, unknown>;
+}
+
+export interface InstallVerification {
+  ok: boolean;
+  checkedFiles: string[];
+  expectedProxyBaseUrl?: string;
+  warnings: string[];
+}
+
+export interface ProxyRouteProfile {
+  provider: ProxyRequestRecord['provider'] | 'opencode';
+  localRoute: string;
+  upstreamEnv: string;
+  defaultUpstream: string;
+  streamingMode: ProxyStreamingMode;
+  sensitiveHeaders: string[];
+  pathMode: 'preserve';
+}
+
+export interface ProxyRouteMapping {
+  integration: string;
+  provider: ProxyRouteProfile['provider'];
+  localRoute: string;
+  proxyBaseUrl: string;
+  upstreamBaseUrl: string;
+  sourceConfigPath?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface FilePatchAction {
   type: 'file.patch';
   filePath: string;
@@ -165,6 +208,9 @@ export interface FilePatchAction {
   after: unknown;
   backupRequired: true;
   scope?: Scope;
+  format?: ConfigPatchFormat;
+  writeMode?: ConfigPatchWriteMode;
+  preserveFormatting?: boolean;
 }
 
 export interface EnvUpdateAction {
@@ -197,6 +243,10 @@ export interface InstallPlan {
   risks: PlanRisk[];
   rollback: RollbackPlan;
   scope: Scope;
+  summary?: string;
+  preflight?: AgentConfigRouteState;
+  verification?: InstallVerification;
+  proxyRoute?: ProxyRouteProfile;
 }
 
 export interface InstallResult {
@@ -204,12 +254,14 @@ export interface InstallResult {
   planId: string;
   appliedActions: number;
   warnings: string[];
+  verification?: InstallVerification;
 }
 
 export interface RollbackResult {
   ok: boolean;
   backupId?: string;
   restoredFiles: string[];
+  deletedFiles?: string[];
   warnings: string[];
 }
 
@@ -227,6 +279,7 @@ export interface ScanResult {
   };
   reasons: string[];
   warnings: string[];
+  routeState?: AgentConfigRouteState;
 }
 
 export interface ProxyRequestRecord {

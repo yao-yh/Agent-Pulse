@@ -22,6 +22,7 @@
     "@agent-pulse/channels": "workspace:*",
     "@agent-pulse/core": "workspace:*",
     "@agent-pulse/installer": "workspace:*",
+    "@agent-pulse/integrations": "workspace:*",
     "@agent-pulse/inventory": "workspace:*",
     "@agent-pulse/proxy": "workspace:*",
     "@agent-pulse/storage": "workspace:*",

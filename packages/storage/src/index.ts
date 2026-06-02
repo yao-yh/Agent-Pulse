@@ -9,10 +9,17 @@ import {
   InstallPlan,
   nowIso,
   ProxyRequestRecord,
+  ProxyRouteMapping,
   SessionRecord,
   TaskRecord,
   eventTypeToTaskStatus
 } from '@agent-pulse/core';
+
+export interface InstallPlanRecord {
+  plan: InstallPlan;
+  applied: boolean;
+  appliedAt?: string;
+}
 
 export interface StorageOptions {
   databasePath?: string;
@@ -378,6 +385,17 @@ export class AgentPulseStorage {
       .map((row: any) => JSON.parse(row.plan_json));
   }
 
+  listInstallPlanRecords(limit = 100): InstallPlanRecord[] {
+    return this.db
+      .prepare('SELECT plan_json, applied, applied_at FROM install_plans ORDER BY created_at DESC LIMIT ?')
+      .all(limit)
+      .map((row: any) => ({
+        plan: JSON.parse(row.plan_json),
+        applied: row.applied === 1,
+        appliedAt: row.applied_at ?? undefined
+      }));
+  }
+
   markPlanApplied(planId: string): void {
     this.db.prepare('UPDATE install_plans SET applied = 1, applied_at = ? WHERE id = ?').run(nowIso(), planId);
   }
@@ -395,6 +413,54 @@ export class AgentPulseStorage {
       .prepare('SELECT * FROM backups WHERE plan_id = ? ORDER BY created_at DESC')
       .all(latest.plan_id)
       .map((row: any) => ({ id: row.id, planId: row.plan_id, filePath: row.file_path, backupPath: row.backup_path }));
+  }
+
+  getLatestBackupsForIntegration(integration: string): Array<{ id: string; planId: string; filePath: string; backupPath: string }> {
+    const latest = this.db
+      .prepare(
+        `SELECT b.plan_id
+         FROM backups b
+         JOIN install_plans p ON p.id = b.plan_id
+         WHERE p.integration = ? AND p.applied = 1
+         ORDER BY b.created_at DESC
+         LIMIT 1`
+      )
+      .get(integration) as { plan_id?: string } | undefined;
+    if (!latest?.plan_id) return [];
+    return this.db
+      .prepare('SELECT * FROM backups WHERE plan_id = ? ORDER BY created_at DESC')
+      .all(latest.plan_id)
+      .map((row: any) => ({ id: row.id, planId: row.plan_id, filePath: row.file_path, backupPath: row.backup_path }));
+  }
+
+  markBackupRestored(backupId: string): void {
+    this.db.prepare('UPDATE backups SET restored_at = ? WHERE id = ?').run(nowIso(), backupId);
+  }
+
+  listProxyRouteMappings(): ProxyRouteMapping[] {
+    const value = this.getSetting('proxy.routeMappings');
+    return Array.isArray(value) ? (value as ProxyRouteMapping[]) : [];
+  }
+
+  getProxyRouteMapping(integration: string): ProxyRouteMapping | undefined {
+    return this.listProxyRouteMappings().find((mapping) => mapping.integration === integration);
+  }
+
+  upsertProxyRouteMapping(input: Omit<ProxyRouteMapping, 'createdAt' | 'updatedAt'>): ProxyRouteMapping {
+    const mappings = this.listProxyRouteMappings();
+    const now = nowIso();
+    const existing = mappings.find((mapping) => mapping.integration === input.integration);
+    const next: ProxyRouteMapping = {
+      ...input,
+      createdAt: existing?.createdAt || now,
+      updatedAt: now
+    };
+    this.setSetting('proxy.routeMappings', [next, ...mappings.filter((mapping) => mapping.integration !== input.integration)]);
+    return next;
+  }
+
+  deleteProxyRouteMapping(integration: string): void {
+    this.setSetting('proxy.routeMappings', this.listProxyRouteMappings().filter((mapping) => mapping.integration !== integration));
   }
 
   setSetting(key: string, value: unknown): void {

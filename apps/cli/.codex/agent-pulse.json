@@ -1,0 +1,6 @@
+{
+  "proxy": {
+    "openaiBaseUrl": "http://127.0.0.1:8080/proxy/codex",
+    "note": "Use this file as AgentPulse metadata; apply concrete Codex config manually if your Codex version needs provider-specific fields."
+  }
+}

@@ -23,19 +23,22 @@
 
 - 职责：本地 Fastify 服务，默认监听 `127.0.0.1:8080`。
 - 入口：`src/index.ts`，应用构造：`src/app.ts`。
-- API：health、hook ingest、events/tasks/sessions 查询、inventory、install plans、proxy、notification test。
+- API：health、hook ingest、events/tasks/sessions 查询、inventory、install plans、agents scan/replace/rollback、proxy、notification test。
 - SSR：非 `/api`、`/ingest`、`/proxy` 路由优先加载 `apps/web/dist/server/entry-server.js` 渲染 React HTML，再由 `apps/web/dist/client` 提供静态资源。
 - 数据流：HTTP 请求进入 server；API 写入 `packages/storage`，经 `packages/analyzers` 标记风险，经 `packages/channels` 发送通知；页面请求走 SSR fallback。
-- 测试点：health、hook 幂等、inventory scan、proxy 透传、通知测试、SSR fallback 返回已渲染 HTML。
+- 测试点：health、hook 幂等、inventory scan、agents 行级 scan/replace/rollback、proxy 透传、通知测试、SSR fallback 返回已渲染 HTML。
 
 ## apps/web
 
 - 职责：本地工具型控制台。
 - 入口：客户端 `src/entry-client.tsx`，服务端 `src/entry-server.tsx`，共享根组件 `src/Root.tsx`，主页面 `src/App.tsx`。
-- 页面：Events、Tasks、Inventory、Install Plans、Proxy Requests、Notifications、Doctor。
+- 页面：Agents、Events、Tasks、Inventory、Install Plans、Proxy Requests、Notifications、Doctor。
+- 组件库：使用 Ant Design，不手搓表格、按钮、表单、状态标签等通用控件。
 - 数据流：通过 `/api/*` 拉取本地服务数据，不直接读取本地文件系统。
+- Agents 数据流：`POST /api/agents/scan` 按传入 scope 获取列表；Web 默认传 `scope=user` 并展示用户级真实配置路径，`POST /api/agents/:integration/replace` 执行 plan -> backup -> apply -> verify -> persist route mapping，`POST /api/agents/:integration/rollback` 按 agent 回滚最近备份并删除 route mapping。
+- Agents 操作语义：页面点击“替换”是显式用户操作，默认直接修改当前用户目录下的真实 agent 配置文件；替换前必须通过 Ant Design `Modal.confirm` 展示目标文件、原始上游、新代理地址、备份和回滚说明。
 - SSR：Vite build 生成 `dist/client` 和 `dist/server`；server 端渲染首屏 shell，client 端 hydrate 后继续用 TanStack Query 拉取本地 API。
-- 测试点：Vite client build、Vite SSR build、核心页面渲染、空数据状态。
+- 测试点：Vite client build、Vite SSR build、Agents 页面扫描/替换/回滚状态、核心页面渲染、空数据状态。
 
 ## packages/core
 
@@ -51,7 +54,7 @@
 - 入口：`src/index.ts`。
 - 数据表：events、sessions、tasks、proxy_requests、analysis_results、notifications、install_plans、backups、inventory_sources、skills、mcp_servers、plugins、settings。
 - 数据流：server、CLI、installer、inventory 共享同一个 storage API。
-- 测试点：schema 初始化、事件幂等写入、备份记录、inventory upsert。
+- 测试点：schema 初始化、事件幂等写入、备份记录、按 integration 查询最近已应用备份、inventory upsert。
 
 ## packages/probes
 
@@ -72,18 +75,25 @@
 ## packages/integrations
 
 - 职责：工具适配器集合。
-- 入口：`src/index.ts`。
-- 适配器：Codex、Claude Code、OpenCode skeleton。
-- 数据流：adapter detect/read/plan 只处理自身工具配置，向 installer 输出标准 scan 和 plan。
-- 测试点：Codex 配置发现、Claude 缺失时给出不支持原因、OpenCode skeleton 不崩溃。
+- 入口：`src/index.ts` 只负责公共导出、adapter registry、scan/plan/verify 聚合，不承载具体工具逻辑。
+- 适配器目录：`src/adapters/`，Codex、Claude Code、OpenCode 分别维护独立 adapter 文件，便于后续按工具版本定制。
+- Helper 目录：`src/helpers/`，封装配置解析/合并、TOML 写回、代理路由 profile 等可复用能力。
+- 数据流：adapter detect/readConfigState/planProxyInstall/verifyInstall 只处理自身工具配置，向 installer 输出标准 scan、真实配置 patch、proxy route profile 和验证结果。
+- Proxy 预设计：adapter 输出 `ProxyRouteProfile`，包含 local route、upstream env、默认 upstream、streaming mode、敏感 header 和 path mode；本阶段不改 proxy streaming 转发行为。
+- 代理映射：adapter 生成计划时保留原始上游地址；installer apply 验证成功后持久化 `原始上游地址 -> 本地代理地址` 映射；proxy 层启动时加载映射到内存，并在请求转发时优先使用内存映射决定 upstream。
+- 测试点：adapter registry、Codex 配置发现与 TOML patch、Claude JSON/JSONC patch、OpenCode provider patch、无法识别 schema 时降级为 command suggestion。
 
 ## packages/installer
 
 - 职责：聚合扫描、生成计划、备份、应用和回滚。
 - 入口：`src/index.ts`。
-- 安全默认值：`install` 默认只允许 workspace scope；用户级需要显式 `--scope user --yes`。
+- 安全默认值：CLI `install` 默认只允许 workspace scope；用户级需要显式 `--scope user --yes`。Web Agents 页面默认 user scope，点击确认弹窗后由 agents replace API 强制带 `yes=true`，但仍必须先备份、再写入、再验证。
 - 数据流：scan -> plan -> backup -> apply -> verify -> rollback log。
-- 测试点：plan 无副作用、install 创建备份、rollback 恢复原文件。
+- 备份位置：`<AgentPulse data dir>/backups/<backupId>-<encodedTargetPath>`，旁路写入 `<backupPath>.meta.json` 记录 `{ existedBefore, filePath, planId, createdAt }`。
+- 回退语义：原文件存在则恢复原内容；原文件不存在则 rollback 删除 apply 创建的文件；缺少 meta 时兼容旧逻辑，按备份文件复制恢复。
+- 行级回退：保留 `rollbackLatest` 给 CLI 使用，提供按 integration 回退能力给 Web Agents 页面使用，避免误回滚其它 agent。
+- 代理映射：apply 成功后写入持久化映射；rollback 成功后删除对应 integration 映射，避免 proxy 继续使用已回退配置。
+- 测试点：plan 无副作用、install 创建备份和 meta、verify 失败不自动 rollback、rollback 恢复原文件、rollback 删除本次创建的新文件、按 integration 回滚不误伤其它 agent。
 
 ## packages/proxy
 

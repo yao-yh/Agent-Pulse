@@ -35,6 +35,8 @@ agent-pulse doctor
 
 `install` defaults to workspace scope. User-level changes require explicit confirmation flags in the implementation path.
 
+For Chinese CLI and Web Console usage instructions about routing Codex, Claude Code, and OpenCode through the local AgentPulse proxy, see `doc/08-agent-proxy-config-usage.md`.
+
 ## Local APIs
 
 - `GET /api/health`

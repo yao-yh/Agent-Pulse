@@ -11,13 +11,15 @@ import {
   AgentEvent,
   AgentEventType,
   AgentSourceType,
+  Scope,
   newId,
   nowIso,
   redactSecrets,
   stableId
 } from '@agent-pulse/core';
+import { getAdapterByName } from '@agent-pulse/integrations';
 import { diffInventory, scanInventory } from '@agent-pulse/inventory';
-import { applyInstall, planInstall, rollbackLatest, scan } from '@agent-pulse/installer';
+import { applyInstall, planInstall, rollbackIntegration, rollbackLatest, scan } from '@agent-pulse/installer';
 import { registerProxyRoutes } from '@agent-pulse/proxy';
 import { AgentPulseStorage, createStorage } from '@agent-pulse/storage';
 
@@ -82,6 +84,32 @@ export async function buildApp(options: BuildAppOptions = {}) {
   app.post('/api/inventory/scan', async () => scanInventory({ workspaceDir, storage }));
 
   app.get('/api/scan', async () => scan(workspaceDir));
+  app.post('/api/agents/scan', async (request) => {
+    const body = (request.body || {}) as { scope?: Extract<Scope, 'workspace' | 'user'>; proxyBaseUrl?: string };
+    return buildAgentRows(storage, await scan(workspaceDir), {
+      workspaceDir,
+      scope: body.scope || 'user',
+      proxyBaseUrl: body.proxyBaseUrl || 'http://127.0.0.1:8080'
+    });
+  });
+  app.post('/api/agents/:integration/replace', async (request) => {
+    const params = request.params as { integration: string };
+    const body = (request.body || {}) as { scope?: 'workspace' | 'user' | 'global'; proxyBaseUrl?: string; yes?: boolean };
+    const scope = body.scope || 'user';
+    const plans = await planInstall({ workspaceDir, scope, proxyBaseUrl: body.proxyBaseUrl, storage });
+    const plan = plans.find((item) => item.integration === params.integration);
+    if (!plan) return { ok: false, error: 'integration_not_found', integration: params.integration };
+    const result = await applyInstall(plan, { scope, yes: true, storage });
+    return { ok: result.ok, integration: params.integration, plan, result };
+  });
+  app.post('/api/agents/:integration/rollback', async (request) => {
+    const params = request.params as { integration: string };
+    const result = rollbackIntegration(params.integration, { storage });
+    if (!result.ok && result.restoredFiles.length === 0 && (result.deletedFiles || []).length === 0) {
+      return { ok: false, integration: params.integration, error: 'backup_not_found', result };
+    }
+    return { ok: result.ok, integration: params.integration, result };
+  });
   app.post('/api/install/plan', async (request) => {
     const body = (request.body || {}) as { scope?: 'workspace' | 'user' | 'global'; proxyBaseUrl?: string };
     return planInstall({ workspaceDir, scope: body.scope || 'workspace', proxyBaseUrl: body.proxyBaseUrl, storage });
@@ -118,6 +146,52 @@ export async function buildApp(options: BuildAppOptions = {}) {
 
   app.addHook('onClose', async () => storage.close());
   return app;
+}
+
+async function buildAgentRows(
+  storage: AgentPulseStorage,
+  results: Awaited<ReturnType<typeof scan>>,
+  options: { workspaceDir: string; scope: Scope; proxyBaseUrl: string }
+) {
+  const records = storage.listInstallPlanRecords();
+  return Promise.all(results.map(async (result) => {
+    const latest = records.find((record) => record.plan.integration === result.integration);
+    const latestApplied = records.find((record) => record.plan.integration === result.integration && record.applied);
+    const adapter = getAdapterByName(result.integration);
+    const routeState = adapter
+      ? await adapter.readConfigState({ workspaceDir: options.workspaceDir, scope: options.scope, proxyBaseUrl: options.proxyBaseUrl })
+      : result.routeState;
+    const proxyRoute = adapter?.getProxyRouteProfile({ proxyBaseUrl: options.proxyBaseUrl });
+    const targetSource = result.configSources.find((source) => source.kind === 'tool-config' && source.scope === options.scope);
+    const targetConfigPath = routeState?.configPath || targetSource?.path;
+    const proxyUrl = proxyRoute ? joinProxyUrl(options.proxyBaseUrl, proxyRoute.localRoute) : undefined;
+    const originalUpstream = routeState?.originalUpstream || routeState?.currentBaseUrl || proxyRoute?.defaultUpstream;
+    const willCreateConfig = Boolean(targetConfigPath && targetSource && !targetSource.exists);
+    const canReplace = result.capabilities.configInstall && Boolean(targetConfigPath);
+    return {
+      integration: result.integration,
+      detected: result.detected,
+      sourceType: result.sourceType,
+      routeState,
+      configSources: result.configSources,
+      capabilities: result.capabilities,
+      reasons: result.reasons,
+      warnings: [...result.warnings, ...(routeState?.warnings || [])],
+      latestPlan: latest ? { id: latest.plan.id, applied: latest.applied, appliedAt: latest.appliedAt, scope: latest.plan.scope, summary: latest.plan.summary } : undefined,
+      scope: options.scope,
+      targetConfigPath,
+      originalUpstream,
+      proxyBaseUrl: proxyUrl,
+      willCreateConfig,
+      backupRequired: true,
+      canReplace,
+      canRollback: Boolean(latestApplied)
+    };
+  }));
+}
+
+function joinProxyUrl(proxyBaseUrl: string, route: string): string {
+  return `${proxyBaseUrl.replace(/\/+$/, '')}${route.startsWith('/') ? route : `/${route}`}`;
 }
 
 function normalizeHookEvent(integration: string, eventType: AgentEventType, body: Record<string, unknown>): AgentEvent {
