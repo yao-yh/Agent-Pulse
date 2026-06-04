@@ -36,13 +36,15 @@ http://127.0.0.1:8080
 
 Web 控制台的 `Agents` 页面提供扫描、替换和回滚操作；CLI 操作仍然保留。
 
-工具配置完成后，请求会被路由到以下本地代理入口：
+工具配置完成后，请求会被路由到以下本地代理入口。`/proxy/` 后面的部分是本地映射标识 `proxyKey`，proxy 会用它查找真实 upstream 和 API 标准：
 
 ```text
 http://127.0.0.1:8080/proxy/codex
 http://127.0.0.1:8080/proxy/claude-code
 http://127.0.0.1:8080/proxy/opencode
 ```
+
+如果某个 `proxyKey` 没有对应映射，proxy 会返回 `404 proxy_mapping_not_found`，不会自动转发到官方默认上游。
 
 ## 2. 扫描当前 Agent 状态
 
@@ -157,6 +159,11 @@ claude-code: http://127.0.0.1:8080/proxy/claude-code -> 原始上游地址
 ```
 
 proxy 层会把这份映射加载到内存。后续请求进入 `/proxy/claude-code` 时，会优先按内存映射转发到原始上游，而不是只依赖环境变量。
+
+映射中还会记录 `apiProtocol`：
+
+- `openai-compatible`：OpenAI-compatible API，例如 Codex、OpenCode。
+- `anthropic-compatible`：Anthropic-compatible API，例如 Claude Code。
 
 替换成功后，该行提示会显示“替换完成，配置已验证。”；如果验证失败或无法识别配置，会在该行提示中显示失败原因。
 

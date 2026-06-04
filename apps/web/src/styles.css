@@ -75,6 +75,10 @@ pre {
   width: 320px;
 }
 
+.tableEmpty {
+  padding-top: 12px;
+}
+
 @media (max-width: 900px) {
   .appHeader {
     align-items: flex-start;

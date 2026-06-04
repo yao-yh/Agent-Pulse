@@ -1,3 +1,4 @@
+import { Readable } from 'node:stream';
 import { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { newId, nowIso, ProxyRequestRecord, ProxyRouteMapping, redactSecrets, summarizeUnknown } from '@agent-pulse/core';
 import { AgentPulseStorage } from '@agent-pulse/storage';
@@ -8,10 +9,7 @@ export interface RegisterProxyOptions {
 
 export function registerProxyRoutes(app: FastifyInstance, options: RegisterProxyOptions): void {
   refreshProxyRouteMappings(options.storage);
-  app.all('/proxy/openai/*', (request, reply) => handleProxy('openai', request, reply, options.storage));
-  app.all('/proxy/anthropic/*', (request, reply) => handleProxy('anthropic', request, reply, options.storage));
-  app.all('/proxy/codex/*', (request, reply) => handleProxy('codex', request, reply, options.storage));
-  app.all('/proxy/claude-code/*', (request, reply) => handleProxy('claude-code', request, reply, options.storage));
+  app.all('/proxy/:proxyKey/*', (request, reply) => handleProxy(request, reply, options.storage));
 }
 
 const routeMappings = new Map<string, ProxyRouteMapping>();
@@ -19,26 +17,34 @@ const routeMappings = new Map<string, ProxyRouteMapping>();
 export function refreshProxyRouteMappings(storage: AgentPulseStorage): void {
   routeMappings.clear();
   for (const mapping of storage.listProxyRouteMappings()) {
+    routeMappings.set(mapping.proxyKey, mapping);
     routeMappings.set(mapping.integration, mapping);
-    routeMappings.set(String(mapping.provider), mapping);
   }
 }
 
 async function handleProxy(
-  provider: ProxyRequestRecord['provider'],
   request: FastifyRequest,
   reply: FastifyReply,
   storage: AgentPulseStorage
 ): Promise<void> {
   const started = Date.now();
   refreshProxyRouteMappings(storage);
-  const upstreamBase = resolveUpstream(provider);
-  const suffix = request.url.replace(/^\/proxy\/[^/]+/, '');
-  const upstreamUrl = `${upstreamBase.replace(/\/$/, '')}${suffix || '/'}`;
+  const target = resolveProxyTarget(request.url);
+  if (!target) {
+    reply.status(404).send({ error: 'proxy_mapping_not_found' });
+    return;
+  }
+  const mapping = routeMappings.get(target.proxyKey);
+  if (!mapping) {
+    reply.status(404).send({ error: 'proxy_mapping_not_found', proxyKey: target.proxyKey });
+    return;
+  }
+  const upstreamUrl = `${mapping.upstreamBaseUrl.replace(/\/$/, '')}${target.suffix}`;
   const id = newId('proxy');
-  const headers = { ...(request.headers as Record<string, string>) };
+  const headers = normalizeHeaders(request.headers);
   delete headers.host;
-  const body = request.body === undefined ? undefined : JSON.stringify(request.body);
+  delete headers['content-length'];
+  const body = serializeRequestBody(request);
 
   try {
     const response = await fetch(upstreamUrl, {
@@ -50,17 +56,17 @@ async function handleProxy(
     reply.status(response.status);
 
     const contentType = response.headers.get('content-type') || '';
-    if (contentType.includes('text/event-stream') && response.body) {
-      storage.insertProxyRequest(baseRecord(id, provider, request, upstreamUrl, started, response.status, { streaming: true }));
-      return reply.send(response.body);
+    if (shouldPassthroughResponse(response, contentType)) {
+      storage.insertProxyRequest(baseRecord(id, mapping, request, upstreamUrl, started, response.status, { passthrough: true, streaming: contentType.includes('text/event-stream') }));
+      return reply.send(response.body ? Readable.fromWeb(response.body as any) : undefined);
     }
 
     const text = await response.text();
-    storage.insertProxyRequest(baseRecord(id, provider, request, upstreamUrl, started, response.status, summarizeUnknown(safeJson(text) ?? text)));
+    storage.insertProxyRequest(baseRecord(id, mapping, request, upstreamUrl, started, response.status, summarizeUnknown(safeJson(text) ?? text)));
     return reply.send(text);
   } catch (error) {
     storage.insertProxyRequest({
-      ...baseRecord(id, provider, request, upstreamUrl, started),
+      ...baseRecord(id, mapping, request, upstreamUrl, started),
       error: String(error)
     });
     reply.status(502).send({ error: 'proxy_failed', message: String(error) });
@@ -69,7 +75,7 @@ async function handleProxy(
 
 function baseRecord(
   id: string,
-  provider: ProxyRequestRecord['provider'],
+  mapping: ProxyRouteMapping,
   request: FastifyRequest,
   upstreamUrl: string,
   started: number,
@@ -78,25 +84,52 @@ function baseRecord(
 ): ProxyRequestRecord {
   return {
     id,
-    provider,
+    provider: mapping.provider as ProxyRequestRecord['provider'],
+    proxyKey: mapping.proxyKey,
+    apiProtocol: mapping.apiProtocol,
     method: request.method,
     path: request.url,
     upstreamUrl,
     statusCode,
     durationMs: Date.now() - started,
-    requestSummary: summarizeUnknown(redactSecrets(request.body ?? {})),
+    requestSummary: summarizeUnknown(redactSecrets({ headers: request.headers, body: request.body ?? {} })),
     responseSummary,
     createdAt: nowIso()
   };
 }
 
-function resolveUpstream(provider: ProxyRequestRecord['provider']): string {
-  const mapped = routeMappings.get(provider);
-  if (mapped?.upstreamBaseUrl) return mapped.upstreamBaseUrl;
-  if (provider === 'anthropic' || provider === 'claude-code') {
-    return process.env.AGENT_PULSE_ANTHROPIC_UPSTREAM || 'https://api.anthropic.com';
+function resolveProxyTarget(url: string): { proxyKey: string; suffix: string } | null {
+  const match = url.match(/^\/proxy\/([^/?#]+)(\/[^?#]*)?(\?[^#]*)?/);
+  if (!match) return null;
+  const proxyKey = decodeURIComponent(match[1] || '');
+  if (!proxyKey) return null;
+  const suffix = `${match[2] || '/'}${match[3] || ''}`;
+  return { proxyKey, suffix };
+}
+
+function normalizeHeaders(headers: FastifyRequest['headers']): Record<string, string> {
+  const output: Record<string, string> = {};
+  for (const [key, value] of Object.entries(headers)) {
+    if (Array.isArray(value)) output[key] = value.join(', ');
+    else if (value !== undefined) output[key] = String(value);
   }
-  return process.env.AGENT_PULSE_OPENAI_UPSTREAM || 'https://api.openai.com';
+  return output;
+}
+
+function serializeRequestBody(request: FastifyRequest): BodyInit | undefined {
+  if (request.method === 'GET' || request.method === 'HEAD') return undefined;
+  const body = request.body;
+  if (body === undefined) return undefined;
+  if (typeof body === 'string') return body;
+  if (body instanceof Uint8Array) return body as BodyInit;
+  return JSON.stringify(body);
+}
+
+function shouldPassthroughResponse(response: Response, contentType: string): boolean {
+  if (!response.body) return false;
+  if (contentType.includes('text/event-stream')) return true;
+  if (contentType.includes('application/json') || contentType.includes('+json') || contentType.startsWith('text/')) return false;
+  return true;
 }
 
 function safeJson(text: string): unknown {

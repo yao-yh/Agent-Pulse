@@ -312,6 +312,11 @@ export class AgentPulseStorage {
   }
 
   insertProxyRequest(record: ProxyRequestRecord): void {
+    const requestSummary = {
+      ...(record.requestSummary || {}),
+      ...(record.proxyKey ? { proxyKey: record.proxyKey } : {}),
+      ...(record.apiProtocol ? { apiProtocol: record.apiProtocol } : {})
+    };
     this.db
       .prepare(
         `INSERT INTO proxy_requests (id, provider, method, path, upstream_url, status_code, duration_ms, request_summary_json, response_summary_json, error, created_at)
@@ -321,7 +326,7 @@ export class AgentPulseStorage {
         ...record,
         statusCode: record.statusCode ?? null,
         durationMs: record.durationMs ?? null,
-        requestSummaryJson: record.requestSummary ? JSON.stringify(record.requestSummary) : null,
+        requestSummaryJson: Object.keys(requestSummary).length ? JSON.stringify(requestSummary) : null,
         responseSummaryJson: record.responseSummary ? JSON.stringify(record.responseSummary) : null,
         error: record.error ?? null
       });
@@ -331,19 +336,24 @@ export class AgentPulseStorage {
     return this.db
       .prepare('SELECT * FROM proxy_requests ORDER BY created_at DESC LIMIT ?')
       .all(limit)
-      .map((row: any) => ({
-        id: row.id,
-        provider: row.provider,
-        method: row.method,
-        path: row.path,
-        upstreamUrl: row.upstream_url,
-        statusCode: row.status_code ?? undefined,
-        durationMs: row.duration_ms ?? undefined,
-        requestSummary: parseJson(row.request_summary_json),
-        responseSummary: parseJson(row.response_summary_json),
-        error: row.error ?? undefined,
-        createdAt: row.created_at
-      }));
+      .map((row: any) => {
+        const requestSummary = parseJson(row.request_summary_json);
+        return {
+          id: row.id,
+          provider: row.provider,
+          proxyKey: typeof requestSummary?.proxyKey === 'string' ? requestSummary.proxyKey : undefined,
+          apiProtocol: typeof requestSummary?.apiProtocol === 'string' ? requestSummary.apiProtocol : undefined,
+          method: row.method,
+          path: row.path,
+          upstreamUrl: row.upstream_url,
+          statusCode: row.status_code ?? undefined,
+          durationMs: row.duration_ms ?? undefined,
+          requestSummary,
+          responseSummary: parseJson(row.response_summary_json),
+          error: row.error ?? undefined,
+          createdAt: row.created_at
+        };
+      });
   }
 
   insertAnalysis(result: AnalysisResult): void {
@@ -439,7 +449,7 @@ export class AgentPulseStorage {
 
   listProxyRouteMappings(): ProxyRouteMapping[] {
     const value = this.getSetting('proxy.routeMappings');
-    return Array.isArray(value) ? (value as ProxyRouteMapping[]) : [];
+    return Array.isArray(value) ? (value.map(normalizeProxyRouteMapping).filter(Boolean) as ProxyRouteMapping[]) : [];
   }
 
   getProxyRouteMapping(integration: string): ProxyRouteMapping | undefined {
@@ -509,6 +519,28 @@ function parseJson(value: string | null | undefined): any {
   } catch {
     return undefined;
   }
+}
+
+function normalizeProxyRouteMapping(value: unknown): ProxyRouteMapping | null {
+  if (!value || typeof value !== 'object') return null;
+  const mapping = value as Partial<ProxyRouteMapping>;
+  if (!mapping.integration || !mapping.provider || !mapping.localRoute || !mapping.proxyBaseUrl || !mapping.upstreamBaseUrl) return null;
+  return {
+    ...mapping,
+    integration: mapping.integration,
+    provider: mapping.provider,
+    proxyKey: mapping.proxyKey || mapping.integration,
+    apiProtocol: mapping.apiProtocol || inferApiProtocol(String(mapping.provider || mapping.integration)),
+    localRoute: mapping.localRoute,
+    proxyBaseUrl: mapping.proxyBaseUrl,
+    upstreamBaseUrl: mapping.upstreamBaseUrl,
+    createdAt: mapping.createdAt || nowIso(),
+    updatedAt: mapping.updatedAt || mapping.createdAt || nowIso()
+  };
+}
+
+function inferApiProtocol(provider: string): ProxyRouteMapping['apiProtocol'] {
+  return provider === 'anthropic' || provider === 'claude-code' ? 'anthropic-compatible' : 'openai-compatible';
 }
 
 function isTerminal(status: string): boolean {

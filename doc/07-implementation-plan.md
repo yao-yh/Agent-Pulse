@@ -97,11 +97,13 @@
 
 ## packages/proxy
 
-- 职责：OpenAI/Anthropic compatible 本地代理。
+- 职责：标识驱动的本地代理，通过 `/proxy/{proxyKey}/*` 查找本地 route mapping 后转发到真实 upstream。
 - 入口：`src/index.ts`。
-- 路由：`/proxy/openai/*`、`/proxy/anthropic/*`、`/proxy/codex/*`、`/proxy/claude-code/*`。
-- 数据流：请求摘要写入 storage，转发上游，非阻塞采集响应摘要，SSE 原样透传。
-- 测试点：非流式 JSON、SSE streaming、错误透传、取消传播、敏感 header 不落库。
+- 路由：`/proxy/:proxyKey/*`；`openai`、`anthropic`、`codex`、`claude-code`、`opencode` 只是内置 adapter 默认使用的 proxyKey，不再等同于固定 provider。
+- 映射语义：route mapping 必须包含 `proxyKey`、`upstreamBaseUrl`、`apiProtocol`；`apiProtocol` 取值为 `openai-compatible` 或 `anthropic-compatible`，用于记录和后续协议差异处理。
+- 数据流：请求进入 proxy 后按 proxyKey 查 mapping；未命中返回 `404 proxy_mapping_not_found`；命中后保留 method/path/query/header/body 转发上游，响应 status/header/body 原样回传客户端。
+- Streaming：SSE 和 chunked/未知长度响应直接透传，不为了响应摘要阻塞用户-facing response path；非流式 JSON/text 响应保存脱敏摘要。
+- 测试点：映射命中转发、未知 proxyKey 404、非流式 JSON、SSE/chunked passthrough、上游 4xx/5xx 原样透传、AgentPulse 自身异常 502、敏感 header/body 不落库。
 
 ## packages/channels
 

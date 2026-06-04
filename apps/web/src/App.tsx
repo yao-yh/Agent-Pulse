@@ -30,6 +30,19 @@ interface AgentRow {
   canRollback: boolean;
 }
 
+interface ProxyRequestRow {
+  id: string;
+  provider: string;
+  proxyKey?: string;
+  apiProtocol?: string;
+  method: string;
+  path: string;
+  statusCode?: number;
+  durationMs?: number;
+  error?: string;
+  createdAt: string;
+}
+
 const defaultProxyBaseUrl = 'http://127.0.0.1:8080';
 
 export function App() {
@@ -265,7 +278,33 @@ function Plans() {
 
 function ProxyRequests() {
   const { data } = useApi('/api/proxy/requests');
-  return <Card title="Proxy Requests">{Array.isArray(data) && data.length ? <JsonRows rows={data} /> : <Empty text="No proxy traffic captured yet." />}</Card>;
+  const rows = Array.isArray(data) ? data as ProxyRequestRow[] : [];
+  const columns: ColumnsType<ProxyRequestRow> = [
+    { title: 'Provider', dataIndex: 'provider', key: 'provider', width: 120 },
+    { title: 'Proxy Key', key: 'proxyKey', width: 140, render: (_, row) => row.proxyKey || '-' },
+    { title: 'API 标准', key: 'apiProtocol', width: 180, render: (_, row) => row.apiProtocol || '-' },
+    { title: 'Method', dataIndex: 'method', key: 'method', width: 100 },
+    { title: 'Path', dataIndex: 'path', key: 'path', ellipsis: true },
+    {
+      title: 'Status',
+      key: 'status',
+      width: 110,
+      render: (_, row) => {
+        if (!row.statusCode) return <Tag color={row.error ? 'red' : 'default'}>-</Tag>;
+        const color = row.statusCode >= 500 ? 'red' : row.statusCode >= 400 ? 'orange' : 'green';
+        return <Tag color={color}>{row.statusCode}</Tag>;
+      }
+    },
+    { title: 'Duration', key: 'duration', width: 120, render: (_, row) => row.durationMs == null ? '-' : `${row.durationMs} ms` },
+    { title: 'Error', key: 'error', ellipsis: true, render: (_, row) => row.error ? <Typography.Text type="danger">{row.error}</Typography.Text> : '-' },
+    { title: 'Created', dataIndex: 'createdAt', key: 'createdAt', width: 220 }
+  ];
+  return (
+    <Card title="Proxy Requests">
+      <Table rowKey="id" columns={columns} dataSource={rows} pagination={false} scroll={{ x: 1200 }} />
+      {!rows.length && <div className="tableEmpty"><Empty text="No proxy traffic captured yet." /></div>}
+    </Card>
+  );
 }
 
 function Notifications() {

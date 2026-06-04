@@ -1,9 +1,9 @@
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 
-const docPath = 'doc/07-implementation-plan.md';
-const doc = readFileSync(docPath, 'utf8');
-const roots = ['apps', 'packages', 'plugins'];
+const docPath = "doc/07-implementation-plan.md";
+const doc = readFileSync(docPath, "utf8");
+const roots = ["apps", "packages", "plugins"];
 const missing = [];
 
 for (const root of roots) {
@@ -18,9 +18,8 @@ for (const root of roots) {
 }
 
 if (missing.length > 0) {
-  console.error(`${docPath} is missing sections for: ${missing.join(', ')}`);
+  console.error(`${docPath} is missing sections for: ${missing.join(", ")}`);
   process.exit(1);
 }
 
 console.log(`${docPath} matches current top-level business directories.`);
-

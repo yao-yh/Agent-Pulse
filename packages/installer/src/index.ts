@@ -102,11 +102,17 @@ function persistProxyRouteMapping(plan: InstallPlan, storage?: AgentPulseStorage
   storage.upsertProxyRouteMapping({
     integration: plan.integration,
     provider: plan.proxyRoute.provider,
+    proxyKey: plan.integration,
+    apiProtocol: inferApiProtocol(String(plan.proxyRoute.provider)),
     localRoute,
     proxyBaseUrl: plan.verification.expectedProxyBaseUrl,
     upstreamBaseUrl,
     sourceConfigPath: plan.preflight?.configPath
   });
+}
+
+function inferApiProtocol(provider: string): 'openai-compatible' | 'anthropic-compatible' {
+  return provider === 'anthropic' || provider === 'claude-code' ? 'anthropic-compatible' : 'openai-compatible';
 }
 
 function deleteProxyRouteMappingsForBackups(backups: Array<{ planId?: string }>, storage: AgentPulseStorage): void {

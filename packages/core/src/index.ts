@@ -160,6 +160,7 @@ export interface PlanRisk {
 export type ConfigPatchFormat = 'json' | 'jsonc' | 'toml' | 'text';
 export type ConfigPatchWriteMode = 'replace' | 'merge' | 'structured-patch';
 export type ProxyStreamingMode = 'passthrough' | 'capture-summary' | 'capture-chunks';
+export type ProxyApiProtocol = 'openai-compatible' | 'anthropic-compatible';
 
 export interface AgentConfigRouteState {
   integration: string;
@@ -192,6 +193,8 @@ export interface ProxyRouteProfile {
 export interface ProxyRouteMapping {
   integration: string;
   provider: ProxyRouteProfile['provider'];
+  proxyKey: string;
+  apiProtocol: ProxyApiProtocol;
   localRoute: string;
   proxyBaseUrl: string;
   upstreamBaseUrl: string;
@@ -284,7 +287,9 @@ export interface ScanResult {
 
 export interface ProxyRequestRecord {
   id: string;
-  provider: 'openai' | 'anthropic' | 'codex' | 'claude-code';
+  provider: 'openai' | 'anthropic' | 'codex' | 'claude-code' | 'opencode';
+  proxyKey?: string;
+  apiProtocol?: ProxyApiProtocol;
   method: string;
   path: string;
   upstreamUrl: string;
