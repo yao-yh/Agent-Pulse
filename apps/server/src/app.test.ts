@@ -88,6 +88,41 @@ describe('server app', () => {
     expect(rollback.json().error).toBe('backup_not_found');
   });
 
+  it('returns proxy request context details by id', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agent-pulse-'));
+    const storage = createStorage({ databasePath: join(dir, 'test.db') });
+    storage.insertProxyRequest({
+      id: 'proxy_detail_test',
+      provider: 'claude-code',
+      proxyKey: 'claude-code',
+      apiProtocol: 'anthropic-compatible',
+      method: 'POST',
+      path: '/proxy/claude-code/v1/messages',
+      upstreamUrl: 'https://api.anthropic.com/v1/messages',
+      statusCode: 200,
+      durationMs: 12,
+      requestSummary: { value: { body: { message: 'hello', token: '<redacted>' } }, truncated: false },
+      responseSummary: { value: { ok: true }, truncated: false },
+      createdAt: '2026-06-04T00:00:00.000Z'
+    });
+    const app = await buildApp({ storage, workspaceDir: dir });
+    apps.push(app);
+
+    const detail = await app.inject({ method: 'GET', url: '/api/proxy/requests/proxy_detail_test' });
+    const missing = await app.inject({ method: 'GET', url: '/api/proxy/requests/missing' });
+
+    expect(detail.statusCode).toBe(200);
+    expect(detail.json()).toMatchObject({
+      id: 'proxy_detail_test',
+      proxyKey: 'claude-code',
+      apiProtocol: 'anthropic-compatible',
+      upstreamUrl: 'https://api.anthropic.com/v1/messages',
+      requestSummary: { value: { body: { message: 'hello', token: '<redacted>' } } }
+    });
+    expect(missing.statusCode).toBe(404);
+    expect(missing.json()).toEqual({ error: 'proxy_request_not_found', id: 'missing' });
+  });
+
   it('scans and replaces Claude Code user config from the agents page flow', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'agent-pulse-'));
     process.env.AGENT_PULSE_DATA_DIR = join(dir, 'data');

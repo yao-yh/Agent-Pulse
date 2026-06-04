@@ -108,6 +108,133 @@ describe('proxy route mappings', () => {
     await close();
   });
 
+  it('captures redacted request and response details for non-stream traffic', async () => {
+    const { proxy, storage, upstreamBaseUrl, close } = await createProxyHarness();
+    storage.upsertProxyRouteMapping({
+      integration: 'claude-code',
+      provider: 'claude-code',
+      proxyKey: 'claude-code',
+      apiProtocol: 'anthropic-compatible',
+      localRoute: '/proxy/claude-code',
+      proxyBaseUrl: 'http://127.0.0.1:8080/proxy/claude-code',
+      upstreamBaseUrl
+    });
+
+    await proxy.inject({
+      method: 'POST',
+      url: '/proxy/claude-code/v1/messages?detail=1',
+      headers: { 'x-context-id': 'ctx-123', authorization: 'Bearer sk-secretsecretsecretsecret' },
+      payload: { message: 'hello', metadata: { token: 'sk-bodysecretsecretsecret' } }
+    });
+
+    const record = storage.listProxyRequests()[0];
+    expect(record?.requestSummary).toMatchObject({
+      value: {
+        method: 'POST',
+        path: '/proxy/claude-code/v1/messages?detail=1',
+        proxyKey: 'claude-code',
+        upstreamSuffix: '/v1/messages?detail=1',
+        headers: { 'x-context-id': 'ctx-123', authorization: '<redacted>' },
+        body: { message: 'hello', metadata: { token: '<redacted>' } }
+      },
+      truncated: false
+    });
+    expect(record?.responseSummary).toMatchObject({
+      value: {
+        statusCode: 200,
+        bodyCaptured: true,
+        body: { ok: true, path: '/v1/messages?detail=1' }
+      },
+      truncated: false
+    });
+    expect(JSON.stringify(record)).not.toContain('sk-secretsecretsecretsecret');
+    expect(JSON.stringify(record)).not.toContain('sk-bodysecretsecretsecret');
+    await close();
+  });
+
+  it('captures raw forwarded request body when Fastify does not parse it as JSON', async () => {
+    const { proxy, storage, upstreamBaseUrl, close } = await createProxyHarness();
+    storage.upsertProxyRouteMapping({
+      integration: 'opencode',
+      provider: 'opencode',
+      proxyKey: 'opencode',
+      apiProtocol: 'openai-compatible',
+      localRoute: '/proxy/opencode',
+      proxyBaseUrl: 'http://127.0.0.1:8080/proxy/opencode',
+      upstreamBaseUrl
+    });
+
+    const response = await proxy.inject({
+      method: 'POST',
+      url: '/proxy/opencode/raw',
+      headers: { 'content-type': 'application/octet-stream' },
+      payload: Buffer.from('raw-request-body')
+    });
+
+    const record = storage.listProxyRequests()[0];
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toBe('raw-request-body');
+    expect(record?.requestSummary).toMatchObject({
+      value: {
+        body: { encoding: 'base64', value: Buffer.from('raw-request-body').toString('base64') }
+      },
+      truncated: false
+    });
+    await close();
+  });
+
+  it('captures full redacted request bodies even when they exceed the display cap', async () => {
+    const { proxy, storage, upstreamBaseUrl, close } = await createProxyHarness();
+    storage.upsertProxyRouteMapping({
+      integration: 'opencode',
+      provider: 'opencode',
+      proxyKey: 'opencode',
+      apiProtocol: 'openai-compatible',
+      localRoute: '/proxy/opencode',
+      proxyBaseUrl: 'http://127.0.0.1:8080/proxy/opencode',
+      upstreamBaseUrl
+    });
+
+    await proxy.inject({
+      method: 'POST',
+      url: '/proxy/opencode/v1/chat/completions',
+      payload: { prompt: 'x'.repeat(70 * 1024), token: 'sk-bodysecretsecretsecret' }
+    });
+
+    const record = storage.listProxyRequests()[0];
+    expect(record?.requestSummary?.truncated).toBe(false);
+    expect((record?.requestSummary?.value as any)?.bodyTruncated).toBe(false);
+    expect((record?.requestSummary?.value as any)?.body.prompt).toHaveLength(70 * 1024);
+    expect((record?.requestSummary?.value as any)?.body.token).toBe('<redacted>');
+    expect(JSON.stringify(record?.requestSummary)).not.toContain('sk-bodysecretsecretsecret');
+    await close();
+  });
+
+  it('keeps request body visible when captured headers are oversized', async () => {
+    const { proxy, storage, upstreamBaseUrl, close } = await createProxyHarness();
+    storage.upsertProxyRouteMapping({
+      integration: 'claude-code',
+      provider: 'claude-code',
+      proxyKey: 'claude-code',
+      apiProtocol: 'anthropic-compatible',
+      localRoute: '/proxy/claude-code',
+      proxyBaseUrl: 'http://127.0.0.1:8080/proxy/claude-code',
+      upstreamBaseUrl
+    });
+
+    await proxy.inject({
+      method: 'POST',
+      url: '/proxy/claude-code/v1/messages',
+      headers: { 'x-large-context': 'h'.repeat(70 * 1024) },
+      payload: { message: 'body still visible' }
+    });
+
+    const value = storage.listProxyRequests()[0]?.requestSummary?.value as any;
+    expect(value.headersTruncated).toBe(true);
+    expect(value.body).toEqual({ message: 'body still visible' });
+    await close();
+  });
+
   it('passes SSE and binary responses through', async () => {
     const { proxy, storage, upstreamBaseUrl, close } = await createProxyHarness();
     storage.upsertProxyRouteMapping({
@@ -127,7 +254,45 @@ describe('proxy route mappings', () => {
     expect(sse.body).toContain('data: hello');
     expect(binary.statusCode).toBe(200);
     expect(binary.rawPayload.toString()).toBe('abc');
-    expect(storage.listProxyRequests().some((record) => record.responseSummary?.passthrough === true)).toBe(true);
+    expect(storage.listProxyRequests().some((record) => (record.responseSummary?.value as any)?.passthrough === true)).toBe(true);
+    expect(storage.listProxyRequests().some((record) => (record.responseSummary?.value as any)?.bodyCaptured === 'sse_summary')).toBe(true);
+    expect(storage.listProxyRequests().some((record) => (record.responseSummary?.value as any)?.bodyCaptured === false)).toBe(true);
+    await close();
+  });
+
+  it('extracts model, usage, thinking, and text from Anthropic-style SSE without storing raw events', async () => {
+    const { proxy, storage, upstreamBaseUrl, close } = await createProxyHarness();
+    storage.upsertProxyRouteMapping({
+      integration: 'claude-code',
+      provider: 'claude-code',
+      proxyKey: 'claude-code',
+      apiProtocol: 'anthropic-compatible',
+      localRoute: '/proxy/claude-code',
+      proxyBaseUrl: 'http://127.0.0.1:8080/proxy/claude-code',
+      upstreamBaseUrl
+    });
+
+    const response = await proxy.inject({ method: 'GET', url: '/proxy/claude-code/anthropic-sse' });
+    const record = storage.listProxyRequests()[0];
+    const body = (record?.responseSummary?.value as any)?.body;
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toContain('event: message_start');
+    expect(body).toMatchObject({
+      model: 'deepseek-v4-pro',
+      usage: {
+        input_tokens: 54,
+        cache_read_input_tokens: 25344,
+        output_tokens: 54,
+        service_tier: 'standard'
+      },
+      thinking: 'The with.',
+      text: 'I?',
+      stopReason: 'end_turn',
+      parseErrorCount: 0
+    });
+    expect(JSON.stringify(record)).not.toContain('event: message_start');
+    expect(JSON.stringify(record)).not.toContain('thinking_delta');
     await close();
   });
 
@@ -154,12 +319,50 @@ async function createProxyHarness() {
   const dir = mkdtempSync(join(tmpdir(), 'agent-pulse-proxy-'));
   const storage = createStorage({ databasePath: join(dir, 'test.db') });
   const upstream = Fastify();
+  upstream.addContentTypeParser('*', { parseAs: 'buffer' }, (_request, body, done) => done(null, body));
   upstream.all('/v1/chat/completions', async (request) => ({ ok: true, path: request.url }));
   upstream.all('/v1/messages', async (request) => ({ ok: true, path: request.url }));
+  upstream.post('/raw', async (request) => request.body);
   upstream.get('/error', async (_request, reply) => reply.status(500).send({ error: 'upstream_failed' }));
   upstream.get('/sse', async (_request, reply) => {
     reply.header('content-type', 'text/event-stream');
     return 'data: hello\n\n';
+  });
+  upstream.get('/anthropic-sse', async (_request, reply) => {
+    reply.header('content-type', 'text/event-stream');
+    return [
+      'event: message_start',
+      'data: {"type":"message_start","message":{"id":"c0070c42-d79c-4717-9666-68d3418e83ea","type":"message","role":"assistant","model":"deepseek-v4-pro","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":54,"cache_creation_input_tokens":0,"cache_read_input_tokens":25344,"output_tokens":0,"service_tier":"standard"}}}',
+      '',
+      'event: content_block_start',
+      'data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}',
+      '',
+      'event: content_block_delta',
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"The"}}',
+      '',
+      'event: content_block_delta',
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" with"}}',
+      '',
+      'event: content_block_delta',
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"."}}',
+      '',
+      'event: content_block_start',
+      'data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}',
+      '',
+      'event: content_block_delta',
+      'data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"I"}}',
+      '',
+      'event: content_block_delta',
+      'data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"?"}}',
+      '',
+      'event: message_delta',
+      'data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"input_tokens":54,"cache_creation_input_tokens":0,"cache_read_input_tokens":25344,"output_tokens":54,"service_tier":"standard"}}',
+      '',
+      'event: message_stop',
+      'data: {"type":"message_stop"}',
+      '',
+      ''
+    ].join('\n');
   });
   upstream.get('/binary', async (_request, reply) => {
     reply.header('content-type', 'application/octet-stream');

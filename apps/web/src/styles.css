@@ -79,6 +79,12 @@ pre {
   padding-top: 12px;
 }
 
+.proxyDetailStack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
 @media (max-width: 900px) {
   .appHeader {
     align-items: flex-start;

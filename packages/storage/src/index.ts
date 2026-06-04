@@ -445,24 +445,12 @@ class SqliteAgentPulseStorage {
     return this.db
       .prepare('SELECT * FROM proxy_requests ORDER BY created_at DESC LIMIT ?')
       .all(limit)
-      .map((row: any) => {
-        const requestSummary = parseJson(row.request_summary_json);
-        return {
-          id: row.id,
-          provider: row.provider,
-          proxyKey: typeof requestSummary?.proxyKey === 'string' ? requestSummary.proxyKey : undefined,
-          apiProtocol: typeof requestSummary?.apiProtocol === 'string' ? requestSummary.apiProtocol : undefined,
-          method: row.method,
-          path: row.path,
-          upstreamUrl: row.upstream_url,
-          statusCode: row.status_code ?? undefined,
-          durationMs: row.duration_ms ?? undefined,
-          requestSummary,
-          responseSummary: parseJson(row.response_summary_json),
-          error: row.error ?? undefined,
-          createdAt: row.created_at
-        };
-      });
+      .map(rowToProxyRequest);
+  }
+
+  getProxyRequest(id: string): ProxyRequestRecord | undefined {
+    const row = this.db.prepare('SELECT * FROM proxy_requests WHERE id = ?').get(id);
+    return row ? rowToProxyRequest(row) : undefined;
   }
 
   insertAnalysis(result: AnalysisResult): void {
@@ -618,6 +606,25 @@ function rowToEvent(row: any): AgentEvent {
     normalized: parseJson(row.normalized_json) ?? {},
     riskLevel: row.risk_level,
     tags: parseJson(row.tags_json) ?? []
+  };
+}
+
+function rowToProxyRequest(row: any): ProxyRequestRecord {
+  const requestSummary = parseJson(row.request_summary_json);
+  return {
+    id: row.id,
+    provider: row.provider,
+    proxyKey: typeof requestSummary?.proxyKey === 'string' ? requestSummary.proxyKey : undefined,
+    apiProtocol: typeof requestSummary?.apiProtocol === 'string' ? requestSummary.apiProtocol : undefined,
+    method: row.method,
+    path: row.path,
+    upstreamUrl: row.upstream_url,
+    statusCode: row.status_code ?? undefined,
+    durationMs: row.duration_ms ?? undefined,
+    requestSummary,
+    responseSummary: parseJson(row.response_summary_json),
+    error: row.error ?? undefined,
+    createdAt: row.created_at
   };
 }
 

@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Alert, App as AntApp, Badge, Button, Card, Descriptions, Form, Input, Layout, Menu, Space, Table, Tag, Typography } from 'antd';
+import { Alert, App as AntApp, Badge, Button, Card, Descriptions, Drawer, Form, Input, Layout, Menu, Space, Table, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
@@ -37,8 +37,11 @@ interface ProxyRequestRow {
   apiProtocol?: string;
   method: string;
   path: string;
+  upstreamUrl: string;
   statusCode?: number;
   durationMs?: number;
+  requestSummary?: Record<string, unknown>;
+  responseSummary?: Record<string, unknown>;
   error?: string;
   createdAt: string;
 }
@@ -282,8 +285,14 @@ function Plans() {
 }
 
 function ProxyRequests() {
+  const [selectedRequestId, setSelectedRequestId] = useState<string | null>(null);
   const { data } = useApi('/api/proxy/requests');
   const rows = Array.isArray(data) ? data as ProxyRequestRow[] : [];
+  const { data: detail, isFetching: detailLoading } = useQuery({
+    queryKey: ['/api/proxy/requests/detail', selectedRequestId],
+    queryFn: () => fetchJson<ProxyRequestRow>(`/api/proxy/requests/${encodeURIComponent(selectedRequestId || '')}`),
+    enabled: Boolean(selectedRequestId)
+  });
   const columns: ColumnsType<ProxyRequestRow> = [
     { title: 'Provider', dataIndex: 'provider', key: 'provider', width: 120 },
     { title: 'Proxy Key', key: 'proxyKey', width: 140, render: (_, row) => row.proxyKey || '-' },
@@ -302,12 +311,46 @@ function ProxyRequests() {
     },
     { title: 'Duration', key: 'duration', width: 120, render: (_, row) => row.durationMs == null ? '-' : `${row.durationMs} ms` },
     { title: 'Error', key: 'error', ellipsis: true, render: (_, row) => row.error ? <Typography.Text type="danger">{row.error}</Typography.Text> : '-' },
-    { title: 'Created', dataIndex: 'createdAt', key: 'createdAt', width: 220 }
+    { title: 'Created', dataIndex: 'createdAt', key: 'createdAt', width: 220 },
+    {
+      title: 'Action',
+      key: 'action',
+      width: 110,
+      render: (_, row) => <Button onClick={() => setSelectedRequestId(row.id)}>Details</Button>
+    }
   ];
   return (
     <Card title="Proxy Requests">
       <Table rowKey="id" columns={columns} dataSource={rows} pagination={false} scroll={{ x: 1200 }} />
       {!rows.length && <div className="tableEmpty"><Empty text="No proxy traffic captured yet." /></div>}
+      <Drawer title="Proxy Request / Response Details" open={Boolean(selectedRequestId)} onClose={() => setSelectedRequestId(null)} width={720}>
+        {detailLoading && <Empty text="Loading request details..." />}
+        {detail && (
+          <div className="proxyDetailStack">
+            <Descriptions bordered size="small" column={1}>
+              <Descriptions.Item label="ID">{detail.id}</Descriptions.Item>
+              <Descriptions.Item label="Provider">{detail.provider}</Descriptions.Item>
+              <Descriptions.Item label="Proxy Key">{detail.proxyKey || '-'}</Descriptions.Item>
+              <Descriptions.Item label="API Protocol">{detail.apiProtocol || '-'}</Descriptions.Item>
+              <Descriptions.Item label="Method">{detail.method}</Descriptions.Item>
+              <Descriptions.Item label="Path">{detail.path}</Descriptions.Item>
+              <Descriptions.Item label="Upstream URL">{detail.upstreamUrl}</Descriptions.Item>
+              <Descriptions.Item label="Status">{detail.statusCode ?? '-'}</Descriptions.Item>
+              <Descriptions.Item label="Duration">{detail.durationMs == null ? '-' : `${detail.durationMs} ms`}</Descriptions.Item>
+              <Descriptions.Item label="Created">{detail.createdAt}</Descriptions.Item>
+              <Descriptions.Item label="Error">{detail.error || '-'}</Descriptions.Item>
+            </Descriptions>
+            <section>
+              <Typography.Title level={5}>Request Body</Typography.Title>
+              <JsonBlock value={capturedField(detail.requestSummary, 'body')} />
+            </section>
+            <section>
+              <Typography.Title level={5}>Response Content</Typography.Title>
+              <JsonBlock value={capturedField(detail.responseSummary, 'body')} />
+            </section>
+          </div>
+        )}
+      </Drawer>
     </Card>
   );
 }
@@ -340,6 +383,35 @@ function JsonRows({ rows }: { rows: unknown[] }) {
   return <pre>{JSON.stringify(rows, null, 2)}</pre>;
 }
 
+function JsonBlock({ value }: { value: unknown }) {
+  return <pre>{JSON.stringify(value, null, 2)}</pre>;
+}
+
+function capturedField(summary: Record<string, unknown> | undefined, field: string): unknown {
+  const value = summary?.value;
+  if (value && typeof value === 'object' && !Array.isArray(value) && field in value) {
+    return (value as Record<string, unknown>)[field];
+  }
+  if (value && typeof value === 'object' && !Array.isArray(value) && (value as Record<string, unknown>).bodyCaptured === false) {
+    return {
+      unavailable: true,
+      reason: (value as Record<string, unknown>).reason || 'body_not_captured',
+      message: 'This response body was not buffered because it was streamed, binary, or otherwise unsafe to capture inline.'
+    };
+  }
+  if (summary?.truncated) {
+    return {
+      unavailable: true,
+      reason: 'capture_truncated',
+      message: 'This capture was truncated before the body/content could be displayed without exposing headers.',
+      capturedLength: summary.capturedLength,
+      originalLength: summary.originalLength,
+      maxLength: summary.maxLength
+    };
+  }
+  return {};
+}
+
 function Empty({ text }: { text: string }) {
   return <Typography.Text type="secondary">{text}</Typography.Text>;
 }
@@ -351,13 +423,15 @@ function CurlHint() {
 function useApi(path: string) {
   return useQuery({
     queryKey: [path],
-    queryFn: async () => {
-      const response = await fetch(path);
-      if (!response.ok) throw new Error(`${response.status}`);
-      return response.json();
-    },
+    queryFn: () => fetchJson(path),
     refetchInterval: path.includes('events') || path.includes('tasks') ? 3000 : false
   });
+}
+
+async function fetchJson<T = any>(path: string): Promise<T> {
+  const response = await fetch(path);
+  if (!response.ok) throw new Error(`${response.status}`);
+  return response.json();
 }
 
 async function postJson<T = any>(path: string, body: unknown): Promise<T> {

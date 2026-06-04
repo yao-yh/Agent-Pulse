@@ -22,17 +22,17 @@ This file is the implementation index for AgentPulse. It must stay aligned with 
 
 - Responsibility: local Fastify service, API surface, proxy routes, SSR/static serving for the Web console, and static serving for the documentation site.
 - Primary files: `src/index.ts`, `src/app.ts`.
-- Public APIs: `/api/health`, hook ingest, events/tasks/sessions, inventory, install plans, agents scan/replace/rollback, proxy capture, notification test, `/docs/` static documentation, and SSR fallback for the console.
+- Public APIs: `/api/health`, hook ingest, events/tasks/sessions, inventory, install plans, agents scan/replace/rollback, proxy capture list/detail, notification test, `/docs/` static documentation, and SSR fallback for the console.
 - Data flow: API requests write to storage, analyzers label risk, channels send notifications, proxy routes forward traffic without buffering streaming responses, and static requests read built assets.
-- Test coverage expectations: health, hook idempotency, inventory scan, agents plan/backup/apply/rollback, proxy passthrough including streaming compatibility, docs static route, and SSR fallback.
+- Test coverage expectations: health, hook idempotency, inventory scan, agents plan/backup/apply/rollback, proxy passthrough including streaming compatibility, proxy request detail lookup, docs static route, and SSR fallback.
 
 ## apps/web
 
 - Responsibility: local operational Web console.
 - Primary files: `src/entry-client.tsx`, `src/entry-server.tsx`, `src/Root.tsx`, `src/App.tsx`, `src/styles.css`.
-- Public APIs: user-facing pages Agents, Events, Tasks, Inventory, Plans, Proxy, Notifications, Doctor, plus a documentation link to `/docs/`.
-- Data flow: the browser talks to `/api/*` only; it does not read local files directly. The server renders the initial shell and the client hydrates with TanStack Query.
-- Test coverage expectations: Vite client build, Vite SSR build, primary page rendering, empty states, and the documentation link.
+- Public APIs: user-facing pages Agents, Events, Tasks, Inventory, Plans, Proxy request list/detail, Notifications, Doctor, plus a documentation link to `/docs/`.
+- Data flow: the browser talks to `/api/*` only; it does not read local files directly. Proxy detail views show request body and response content from redacted captures while suppressing captured headers in the UI. The server renders the initial shell and the client hydrates with TanStack Query.
+- Test coverage expectations: Vite client build, Vite SSR build, primary page rendering, Proxy detail drawer rendering, empty states, and the documentation link.
 
 ## apps/docs
 
@@ -54,9 +54,9 @@ This file is the implementation index for AgentPulse. It must stay aligned with 
 
 - Responsibility: local-first SQLite-compatible storage and schema initialization using pure JS/WASM dependencies for npm install compatibility.
 - Primary files: `src/index.ts`.
-- Public APIs: `createStorage`, `AgentPulseStorage`, event/task/session/proxy/inventory/install-plan/backup/settings methods.
+- Public APIs: `createStorage`, `AgentPulseStorage`, event/task/session/proxy list/detail/inventory/install-plan/backup/settings methods.
 - Data flow: CLI, server, installer, inventory, and proxy share the same storage API. Secrets are redacted before persistence.
-- Test coverage expectations: schema initialization, idempotent event writes, backups, inventory upsert, route mappings, and queries for latest applied backups.
+- Test coverage expectations: schema initialization, idempotent event writes, backups, inventory upsert, proxy detail retrieval, route mappings, and queries for latest applied backups.
 
 ## packages/probes
 
@@ -95,8 +95,8 @@ This file is the implementation index for AgentPulse. It must stay aligned with 
 - Responsibility: local proxy under `/proxy/{proxyKey}/*`.
 - Primary files: `src/index.ts`.
 - Public APIs: `registerProxyRoutes`.
-- Data flow: requests resolve route mappings from storage, preserve method/path/query/headers/body, forward to upstream, stream user-facing responses directly, and store only redacted summaries.
-- Test coverage expectations: mapping hits, unknown-key 404, non-stream summaries, SSE/chunked passthrough, upstream 4xx/5xx passthrough, local 502 handling, and sensitive header/body redaction.
+- Data flow: requests resolve route mappings from storage, preserve method/path/query/headers/body, forward to upstream, stream user-facing responses directly, and store redacted request/response detail captures for Web console context views. Request capture uses the actual forwarded body and stores the full redacted request body without the display-length cap; captured headers and response bodies remain separately bounded so oversized metadata cannot hide request body or response content in the UI. Non-stream text/JSON responses capture redacted body detail; SSE responses are parsed in a streaming side-channel into useful model/usage/thinking/text fields instead of storing raw event streams; usage token counts are preserved while secret-bearing token fields remain redacted; binary responses capture metadata only.
+- Test coverage expectations: mapping hits, unknown-key 404, non-stream request/response detail captures, raw request body capture, full redacted request body capture for oversized inputs, SSE/chunked passthrough with structured model/usage/thinking/text extraction and preserved usage counts, upstream 4xx/5xx passthrough, local 502 handling, sensitive header/body redaction, and response/header truncation that never stores cleartext secrets.
 
 ## packages/channels
 

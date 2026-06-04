@@ -73,6 +73,15 @@ export async function buildApp(options: BuildAppOptions = {}) {
   app.get('/api/sessions', async () => storage.listSessions());
   app.get('/api/tasks', async () => storage.listTasks());
   app.get('/api/proxy/requests', async () => storage.listProxyRequests());
+  app.get('/api/proxy/requests/:id', async (request, reply) => {
+    const params = request.params as { id: string };
+    const record = storage.getProxyRequest(params.id);
+    if (!record) {
+      reply.status(404).send({ error: 'proxy_request_not_found', id: params.id });
+      return;
+    }
+    return record;
+  });
   app.get('/api/install/plans', async () => storage.listInstallPlans());
 
   app.get('/api/inventory', async () => storage.getInventory());
