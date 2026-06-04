@@ -1,6 +1,6 @@
 {
   "name": "@agent-pulse/storage",
-  "version": "0.1.0",
+  "version": "0.0.1",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -16,9 +16,9 @@
   },
   "dependencies": {
     "@agent-pulse/core": "workspace:*",
-    "better-sqlite3": "^12.10.0"
+    "sql.js": "^1.14.1"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.13"
+    "@types/sql.js": "^1.4.11"
   }
 }

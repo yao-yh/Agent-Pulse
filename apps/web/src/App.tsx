@@ -66,7 +66,12 @@ export function App() {
             <Typography.Text type="secondary">Local-first AI agent event center</Typography.Text>
             <Typography.Title level={1}>AgentPulse</Typography.Title>
           </div>
-          <HealthBadge />
+          <Space size="middle" wrap>
+            <Button href="/docs/" target="_blank">
+              使用文档
+            </Button>
+            <HealthBadge />
+          </Space>
         </Layout.Header>
         <Layout.Content className="appContent">
           <Menu mode="horizontal" selectedKeys={[tab]} items={tabs.map(([key, label]) => ({ key, label }))} onClick={({ key }) => setTab(key as Tab)} />

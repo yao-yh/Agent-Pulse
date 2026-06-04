@@ -1,26 +1,50 @@
 {
-  "name": "@agent-pulse/cli",
-  "version": "0.1.0",
+  "name": "@cashew-dev/agent-pulse",
+  "version": "0.0.2",
   "type": "module",
   "bin": {
     "agent-pulse": "dist/index.js"
   },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "web/dist",
+    "docs"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
-    "build": "tsup src/index.ts --format esm --dts",
+    "build": "tsup && node scripts/copy-static.mjs",
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@agent-pulse/installer": "workspace:*",
-    "@agent-pulse/inventory": "workspace:*",
-    "@agent-pulse/server": "workspace:*",
-    "@agent-pulse/storage": "workspace:*",
-    "commander": "^14.0.3"
+    "@fastify/cors": "^11.2.0",
+    "@fastify/static": "^9.1.3",
+    "@tanstack/react-query": "^5.100.14",
+    "commander": "^14.0.3",
+    "fastify": "^5.8.5",
+    "antd": "6.4.3",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
+    "sql.js": "^1.14.1"
   },
   "devDependencies": {
+    "@agent-pulse/analyzers": "workspace:*",
+    "@agent-pulse/channels": "workspace:*",
+    "@agent-pulse/core": "workspace:*",
+    "@agent-pulse/installer": "workspace:*",
+    "@agent-pulse/integrations": "workspace:*",
+    "@agent-pulse/inventory": "workspace:*",
+    "@agent-pulse/probes": "workspace:*",
+    "@agent-pulse/proxy": "workspace:*",
+    "@agent-pulse/server": "workspace:*",
+    "@agent-pulse/storage": "workspace:*",
+    "@agent-pulse/web": "workspace:*",
+    "@agent-pulse/docs": "workspace:*",
     "tsx": "^4.22.3"
   }
 }

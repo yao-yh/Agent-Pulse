@@ -1,0 +1,14 @@
+{
+  "name": "@agent-pulse/docs",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/clean-dist.mjs && vitepress build",
+    "dev": "vitepress dev --host 127.0.0.1",
+    "test": "node scripts/clean-dist.mjs && vitepress build"
+  },
+  "devDependencies": {
+    "vitepress": "^1.6.4"
+  }
+}

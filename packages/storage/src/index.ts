@@ -1,6 +1,7 @@
-import { mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { dirname } from 'node:path';
-import Database from 'better-sqlite3';
+import initSqlJs from 'sql.js';
 import {
   AgentEvent,
   AnalysisResult,
@@ -15,6 +16,9 @@ import {
   eventTypeToTaskStatus
 } from '@agent-pulse/core';
 
+const require = createRequire(import.meta.url);
+const SQL = await initSqlJs({ locateFile: (file) => require.resolve(`sql.js/dist/${file}`) });
+
 export interface InstallPlanRecord {
   plan: InstallPlan;
   applied: boolean;
@@ -25,13 +29,118 @@ export interface StorageOptions {
   databasePath?: string;
 }
 
-export class AgentPulseStorage {
-  readonly db: Database.Database;
+export type AgentPulseStorage = SqliteAgentPulseStorage;
+
+class SqlJsCompatDatabase {
+  private readonly database: any;
+
+  constructor(private readonly filePath: string) {
+    const bytes = existsSync(filePath) ? readFileSync(filePath) : undefined;
+    this.database = new SQL.Database(bytes);
+  }
+
+  pragma(_value: string): void {
+    // sql.js persists by exporting the database file, so SQLite WAL pragmas do not apply.
+  }
+
+  exec(sql: string): void {
+    this.database.exec(sql);
+    this.persist();
+  }
+
+  prepare(sql: string): SqlJsCompatStatement {
+    return new SqlJsCompatStatement(this, sql, this.database.prepare(sql));
+  }
+
+  transaction<T extends (...args: any[]) => any>(fn: T): T {
+    return ((...args: Parameters<T>) => {
+      const result = fn(...args);
+      this.persist();
+      return result;
+    }) as T;
+  }
+
+  getRowsModified(): number {
+    return this.database.getRowsModified();
+  }
+
+  persist(): void {
+    writeFileSync(this.filePath, Buffer.from(this.database.export()));
+  }
+
+  close(): void {
+    this.persist();
+    this.database.close();
+  }
+}
+
+class SqlJsCompatStatement {
+  constructor(
+    private readonly db: SqlJsCompatDatabase,
+    private readonly sql: string,
+    private readonly statement: any
+  ) {}
+
+  run(...params: any[]): { changes: number } {
+    try {
+      this.bind(params);
+      this.statement.step();
+      const changes = this.db.getRowsModified();
+      this.db.persist();
+      return { changes };
+    } finally {
+      this.statement.free();
+    }
+  }
+
+  all(...params: any[]): any[] {
+    try {
+      this.bind(params);
+      const rows: any[] = [];
+      while (this.statement.step()) rows.push(this.statement.getAsObject());
+      return rows;
+    } finally {
+      this.statement.free();
+    }
+  }
+
+  get(...params: any[]): any | undefined {
+    try {
+      this.bind(params);
+      return this.statement.step() ? this.statement.getAsObject() : undefined;
+    } finally {
+      this.statement.free();
+    }
+  }
+
+  private bind(params: any[]): void {
+    if (params.length === 0) return;
+    if (params.length === 1 && params[0] && typeof params[0] === 'object' && !Array.isArray(params[0])) {
+      this.statement.bind(normalizeNamedParams(this.sql, params[0]));
+      return;
+    }
+    this.statement.bind(params);
+  }
+}
+
+function normalizeNamedParams(sql: string, params: Record<string, unknown>): Record<string, unknown> {
+  const normalized: Record<string, unknown> = {};
+  for (const match of sql.matchAll(/[@:$][A-Za-z_][A-Za-z0-9_]*/g)) {
+    const placeholder = match[0];
+    const bare = placeholder.slice(1);
+    if (Object.prototype.hasOwnProperty.call(params, placeholder)) normalized[placeholder] = params[placeholder];
+    else if (Object.prototype.hasOwnProperty.call(params, bare)) normalized[placeholder] = params[bare];
+  }
+  return normalized;
+}
+
+class SqliteAgentPulseStorage {
+  readonly db: SqlJsCompatDatabase;
 
   constructor(options: StorageOptions = {}) {
     const databasePath = options.databasePath || getDefaultDatabasePath();
     mkdirSync(dirname(databasePath), { recursive: true });
-    this.db = new Database(databasePath);
+    this.db = new SqlJsCompatDatabase(databasePath);
     this.db.pragma('journal_mode = WAL');
     this.migrate();
   }
@@ -491,7 +600,7 @@ export class AgentPulseStorage {
 }
 
 export function createStorage(options?: StorageOptions): AgentPulseStorage {
-  return new AgentPulseStorage(options);
+  return new SqliteAgentPulseStorage(options);
 }
 
 function rowToEvent(row: any): AgentEvent {

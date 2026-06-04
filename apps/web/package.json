@@ -1,6 +1,6 @@
 {
   "name": "@agent-pulse/web",
-  "version": "0.1.0",
+  "version": "0.0.1",
   "type": "module",
   "scripts": {
     "build": "vite build --outDir dist/client && vite build --ssr src/entry-server.tsx --outDir dist/server",

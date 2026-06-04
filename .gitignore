@@ -1,11 +1,14 @@
 node_modules/
 dist/
+apps/cli/docs/
+apps/cli/web/
+apps/docs/.vitepress/.temp/
 .turbo/
 .vite/
 coverage/
 .agent-pulse/
 *.log
+*.tgz
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
-

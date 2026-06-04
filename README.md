@@ -14,12 +14,7 @@ pnpm --filter @agent-pulse/cli start -- start
 
 Open `http://127.0.0.1:8080` after starting the server.
 
-If `better-sqlite3` native bindings are missing after install, run:
-
-```bash
-$dir=(Get-ChildItem node_modules\.pnpm -Directory -Filter 'better-sqlite3@*' | Select-Object -First 1).FullName + '\node_modules\better-sqlite3'
-npm run install --prefix $dir
-```
+AgentPulse uses `sql.js` for local SQLite storage, so the npm package does not require native SQLite compilation during install.
 
 ## CLI
 

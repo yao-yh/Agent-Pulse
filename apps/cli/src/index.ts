@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+import { existsSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { Command } from 'commander';
 import { buildApp } from '@agent-pulse/server/app';
 import { scanInventory } from '@agent-pulse/inventory';
@@ -77,9 +80,11 @@ program
   .option('--host <host>', 'host', process.env.AGENT_PULSE_HOST || '127.0.0.1')
   .option('--port <port>', 'port', process.env.AGENT_PULSE_PORT || '8080')
   .action(async (options) => {
+    configureStaticAssetPaths();
     const app = await buildApp({ workspaceDir: process.cwd() });
     await app.listen({ host: options.host, port: Number(options.port) });
     console.log(`AgentPulse listening at http://${options.host}:${options.port}`);
+    console.log(`AgentPulse docs available at http://${options.host}:${options.port}/docs/`);
   });
 
 program.command('doctor').description('Check local AgentPulse health').action(async () => {
@@ -107,4 +112,27 @@ program.parseAsync(process.argv);
 
 function printJson(value: unknown): void {
   console.log(JSON.stringify(value, null, 2));
+}
+
+function configureStaticAssetPaths(): void {
+  const currentDir = dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    {
+      web: join(currentDir, '..', 'web', 'dist'),
+      docs: join(currentDir, '..', 'docs')
+    },
+    {
+      web: join(currentDir, '..', '..', 'web', 'dist'),
+      docs: join(currentDir, '..', '..', 'docs', '.vitepress', 'dist')
+    },
+    {
+      web: join(process.cwd(), 'apps', 'web', 'dist'),
+      docs: join(process.cwd(), 'apps', 'docs', '.vitepress', 'dist')
+    }
+  ];
+  const match = candidates.find((candidate) => existsSync(join(candidate.web, 'client')) || existsSync(candidate.docs));
+  if (!match) return;
+  process.env.AGENT_PULSE_WEB_DIST ||= match.web;
+  process.env.AGENT_PULSE_DOCS_DIST ||= match.docs;
+  process.env.AGENT_PULSE_DISABLE_SSR ||= '1';
 }

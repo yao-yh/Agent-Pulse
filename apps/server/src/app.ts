@@ -230,13 +230,25 @@ function shouldNotify(eventType: AgentEventType, riskLevel: string): boolean {
 
 function registerStaticWeb(app: FastifyInstance): void {
   const current = dirname(fileURLToPath(import.meta.url));
-  const webDist = join(current, '..', '..', 'web', 'dist');
+  const webDist = process.env.AGENT_PULSE_WEB_DIST || join(current, '..', '..', 'web', 'dist');
+  const docsDist = process.env.AGENT_PULSE_DOCS_DIST || join(current, '..', '..', 'docs', '.vitepress', 'dist');
   const clientDist = join(webDist, 'client');
+  if (existsSync(docsDist)) {
+    app.register(fastifyStatic, { root: docsDist, prefix: '/docs/', decorateReply: false });
+  }
   if (!existsSync(clientDist)) return;
-  app.register(fastifyStatic, { root: join(clientDist, 'assets'), prefix: '/assets/' });
+  app.register(fastifyStatic, { root: join(clientDist, 'assets'), prefix: '/assets/', decorateReply: false });
   app.setNotFoundHandler(async (request: FastifyRequest, reply: FastifyReply) => {
     if (request.raw.url?.startsWith('/api') || request.raw.url?.startsWith('/ingest') || request.raw.url?.startsWith('/proxy')) {
       reply.status(404).send({ error: 'not_found' });
+      return;
+    }
+    if (request.raw.url === '/docs') {
+      reply.redirect('/docs/');
+      return;
+    }
+    if (process.env.AGENT_PULSE_DISABLE_SSR === '1') {
+      reply.type('text/html').send(readFileSync(join(clientDist, 'index.html'), 'utf8'));
       return;
     }
     const rendered = await renderSsrPage(webDist, request.raw.url || '/');
@@ -244,7 +256,7 @@ function registerStaticWeb(app: FastifyInstance): void {
       reply.type('text/html').send(rendered);
       return;
     }
-    reply.sendFile('index.html');
+    reply.type('text/html').send(readFileSync(join(clientDist, 'index.html'), 'utf8'));
   });
 }
 
