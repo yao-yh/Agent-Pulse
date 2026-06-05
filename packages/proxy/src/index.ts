@@ -19,6 +19,7 @@ export function registerProxyRoutes(app: FastifyInstance, options: RegisterProxy
 
 const routeMappings = new Map<string, ProxyRouteMapping>();
 const DETAIL_CAPTURE_MAX_LENGTH = 64 * 1024;
+const STREAM_CAPTURE_RAW_MAX_LENGTH = 1024 * 1024;
 
 export function refreshProxyRouteMappings(storage: AgentPulseStorage): void {
   routeMappings.clear();
@@ -268,12 +269,21 @@ function streamResponseWithCapture(input: {
   onComplete: (responseSummary: Record<string, unknown>) => void;
 }): Readable | undefined {
   if (!input.response.body) return undefined;
-  const capture = input.parser.createStreamingSummaryCapture({ maxTextLength: DETAIL_CAPTURE_MAX_LENGTH });
+  const capture = input.parser.createStreamingSummaryCapture({
+    maxTextLength: DETAIL_CAPTURE_MAX_LENGTH,
+    maxRawLength: STREAM_CAPTURE_RAW_MAX_LENGTH
+  });
   let stored = false;
   const store = () => {
     if (stored) return;
     stored = true;
-    input.onComplete(captureStreamingResponse(input.response, input.contentType, capture.summary()));
+    setImmediate(() => {
+      try {
+        input.onComplete(captureStreamingResponse(input.response, input.contentType, capture.summary()));
+      } catch (error) {
+        input.onComplete(captureStreamingResponse(input.response, input.contentType, { parseError: String(error) }));
+      }
+    });
   };
   const stream = Readable.fromWeb(input.response.body as any);
   const tee = new Transform({

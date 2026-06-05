@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import Fastify from 'fastify';
 import { describe, expect, it } from 'vitest';
 import { createStorage } from '@agent-pulse/storage';
+import type { AgentPulseStorage } from '@agent-pulse/storage';
 import { registerProxyRoutes } from './index.js';
 import { selectResponseParser } from './parsers.js';
 import { selectRequestSerializer } from './serializers.js';
@@ -296,6 +297,7 @@ describe('proxy route mappings', () => {
     expect(sse.body).toContain('data: hello');
     expect(binary.statusCode).toBe(200);
     expect(binary.rawPayload.toString()).toBe('abc');
+    await waitForProxyRequestCount(storage, 2);
     expect(storage.listProxyRequests().some((record) => (record.responseSummary?.value as any)?.passthrough === true)).toBe(true);
     expect(storage.listProxyRequests().some((record) => (record.responseSummary?.value as any)?.bodyCaptured === 'sse_summary')).toBe(true);
     expect(storage.listProxyRequests().some((record) => (record.responseSummary?.value as any)?.bodyCaptured === false)).toBe(true);
@@ -315,6 +317,7 @@ describe('proxy route mappings', () => {
     });
 
     const response = await proxy.inject({ method: 'GET', url: '/proxy/claude-code/anthropic-sse' });
+    await waitForProxyRequestCount(storage, 1);
     const record = storage.listProxyRequests()[0];
     const body = (record?.responseSummary?.value as any)?.body;
 
@@ -330,6 +333,16 @@ describe('proxy route mappings', () => {
       },
       thinking: 'The with.',
       text: 'I?',
+      toolCalls: [
+        {
+          id: 'toolu_read_1',
+          type: 'tool_use',
+          name: 'read_file',
+          index: 2,
+          arguments: '{"path":"/tmp/a.txt"}',
+          input: { path: '/tmp/a.txt' }
+        }
+      ],
       stopReason: 'end_turn',
       parseErrorCount: 0
     });
@@ -355,6 +368,7 @@ describe('proxy route mappings', () => {
       url: '/proxy/codex/openai-sse',
       headers: { 'x-agent-version': '9.9.0' }
     });
+    await waitForProxyRequestCount(storage, 1);
     const record = storage.listProxyRequests()[0];
     const body = (record?.responseSummary?.value as any)?.body;
 
@@ -369,6 +383,16 @@ describe('proxy route mappings', () => {
       },
       thinking: 'plan',
       text: 'Hello',
+      toolCalls: [
+        {
+          id: 'call_weather',
+          type: 'function',
+          name: 'get_weather',
+          index: 0,
+          arguments: '{"city":"Shanghai"}',
+          input: { city: 'Shanghai' }
+        }
+      ],
       stopReason: 'stop',
       parseErrorCount: 0
     });
@@ -435,6 +459,15 @@ async function createProxyHarness() {
       'event: content_block_delta',
       'data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"?"}}',
       '',
+      'event: content_block_start',
+      'data: {"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"toolu_read_1","name":"read_file","input":{}}}',
+      '',
+      'event: content_block_delta',
+      'data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\\"path\\""}}',
+      '',
+      'event: content_block_delta',
+      'data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":":\\"/tmp/a.txt\\"}"}}',
+      '',
       'event: message_delta',
       'data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"input_tokens":54,"cache_creation_input_tokens":0,"cache_read_input_tokens":25344,"output_tokens":54,"service_tier":"standard"}}',
       '',
@@ -448,6 +481,10 @@ async function createProxyHarness() {
     reply.header('content-type', 'text/event-stream');
     return [
       'data: {"id":"chatcmpl-test","model":"GPT-5.5","choices":[{"delta":{"reasoning_content":"plan"}}]}',
+      '',
+      'data: {"id":"chatcmpl-test","model":"GPT-5.5","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_weather","type":"function","function":{"name":"get_weather","arguments":"{\\"city\\""}}]}}]}',
+      '',
+      'data: {"id":"chatcmpl-test","model":"GPT-5.5","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":":\\"Shanghai\\"}"}}]}}]}',
       '',
       'data: {"id":"chatcmpl-test","model":"GPT-5.5","choices":[{"delta":{"content":"Hel"}}]}',
       '',
@@ -475,4 +512,13 @@ async function createProxyHarness() {
       storage.close();
     }
   };
+}
+
+async function waitForProxyRequestCount(storage: AgentPulseStorage, count: number): Promise<void> {
+  const deadline = Date.now() + 1000;
+  while (Date.now() < deadline) {
+    if (storage.listProxyRequests().length >= count) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  expect(storage.listProxyRequests()).toHaveLength(count);
 }
