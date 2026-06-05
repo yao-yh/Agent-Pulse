@@ -2,6 +2,10 @@ import { Readable, Transform } from 'node:stream';
 import { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { newId, nowIso, ProxyRequestRecord, ProxyRouteMapping, redactSecretString } from '@agent-pulse/core';
 import { AgentPulseStorage } from '@agent-pulse/storage';
+import { detectAgentVersion, selectResponseParser } from './parsers.js';
+import type { VersionedAgentResponseParser } from './parsers.js';
+import { selectRequestSerializer } from './serializers.js';
+import type { RequestSerializerSelection } from './serializers.js';
 
 export interface RegisterProxyOptions {
   storage: AgentPulseStorage;
@@ -46,8 +50,9 @@ async function handleProxy(
   const headers = normalizeHeaders(request.headers);
   delete headers.host;
   delete headers['content-length'];
-  const body = serializeRequestBody(request);
-  const requestSummary = captureRequest(request, body);
+  const serializerSelection = selectRequestSerializer({ apiProtocol: mapping.apiProtocol, body: request.body });
+  const body = serializerSelection.serializer.serialize({ method: request.method, body: request.body });
+  const requestSummary = captureRequest(request, body, mapping, serializerSelection);
 
   try {
     const response = await fetch(upstreamUrl, {
@@ -61,9 +66,16 @@ async function handleProxy(
     const contentType = response.headers.get('content-type') || '';
     if (shouldPassthroughResponse(response, contentType)) {
       if (shouldCaptureStreamingResponse(contentType)) {
+        const parserSelection = selectResponseParser({
+          agent: mapping.integration,
+          apiProtocol: mapping.apiProtocol,
+          agentVersion: detectAgentVersion(headers),
+          maxTextLength: DETAIL_CAPTURE_MAX_LENGTH
+        });
         return reply.send(streamResponseWithCapture({
           response,
           contentType,
+          parser: parserSelection.parser,
           onComplete: (responseSummary) => storage.insertProxyRequest(baseRecord(id, mapping, request, upstreamUrl, started, requestSummary, response.status, responseSummary))
         }));
       }
@@ -109,7 +121,12 @@ function baseRecord(
   };
 }
 
-function captureRequest(request: FastifyRequest, forwardedBody: BodyInit | undefined): Record<string, unknown> {
+function captureRequest(
+  request: FastifyRequest,
+  forwardedBody: BodyInit | undefined,
+  mapping: ProxyRouteMapping,
+  serializerSelection: RequestSerializerSelection
+): Record<string, unknown> {
   const target = resolveProxyTarget(request.url);
   const headers = captureField(normalizeHeaders(request.headers));
   const body = captureFullField(normalizeCapturedBody(forwardedBody ?? request.body));
@@ -118,6 +135,13 @@ function captureRequest(request: FastifyRequest, forwardedBody: BodyInit | undef
     path: request.url,
     proxyKey: target?.proxyKey,
     upstreamSuffix: target?.suffix,
+    apiProtocol: mapping.apiProtocol,
+    serializer: {
+      id: serializerSelection.serializer.id,
+      matchedBy: serializerSelection.matchedBy,
+      model: serializerSelection.model,
+      modelProvider: serializerSelection.modelProvider
+    },
     headers: headers.value,
     headersTruncated: headers.truncated,
     headersOriginalLength: headers.originalLength,
@@ -240,10 +264,11 @@ function normalizeCapturedBody(body: unknown): unknown {
 function streamResponseWithCapture(input: {
   response: Response;
   contentType: string;
+  parser: VersionedAgentResponseParser;
   onComplete: (responseSummary: Record<string, unknown>) => void;
 }): Readable | undefined {
   if (!input.response.body) return undefined;
-  const capture = createSseSummaryCapture();
+  const capture = input.parser.createStreamingSummaryCapture({ maxTextLength: DETAIL_CAPTURE_MAX_LENGTH });
   let stored = false;
   const store = () => {
     if (stored) return;
@@ -264,115 +289,6 @@ function streamResponseWithCapture(input: {
   stream.on('error', store);
   tee.on('close', store);
   return stream.pipe(tee);
-}
-
-function createSseSummaryCapture() {
-  const decoder = new TextDecoder();
-  let buffer = '';
-  let eventCount = 0;
-  let parseErrorCount = 0;
-  let model: string | undefined;
-  let stopReason: string | undefined;
-  let usage: Record<string, unknown> | undefined;
-  const thinking = createBoundedTextAccumulator();
-  const text = createBoundedTextAccumulator();
-
-  const processFrame = (frame: string) => {
-    const dataLines = frame
-      .split('\n')
-      .filter((line) => line.startsWith('data:'))
-      .map((line) => line.slice(5).trimStart());
-    if (!dataLines.length) return;
-    const rawData = dataLines.join('\n').trim();
-    if (!rawData || rawData === '[DONE]') return;
-    const data = parseSseJson(rawData);
-    if (!data || typeof data !== 'object') {
-      parseErrorCount += 1;
-      return;
-    }
-    eventCount += 1;
-    applySseEvent(data as Record<string, any>);
-  };
-
-  const applySseEvent = (event: Record<string, any>) => {
-    if (event.type === 'message_start' && event.message && typeof event.message === 'object') {
-      if (typeof event.message.model === 'string') model = event.message.model;
-      if (event.message.usage && typeof event.message.usage === 'object') usage = { ...usage, ...event.message.usage };
-      return;
-    }
-    if (event.type === 'content_block_start' && event.content_block && typeof event.content_block === 'object') {
-      if (event.content_block.type === 'thinking' && typeof event.content_block.thinking === 'string') thinking.append(event.content_block.thinking);
-      if (event.content_block.type === 'text' && typeof event.content_block.text === 'string') text.append(event.content_block.text);
-      return;
-    }
-    if (event.type === 'content_block_delta' && event.delta && typeof event.delta === 'object') {
-      if (event.delta.type === 'thinking_delta' && typeof event.delta.thinking === 'string') thinking.append(event.delta.thinking);
-      if (event.delta.type === 'text_delta' && typeof event.delta.text === 'string') text.append(event.delta.text);
-      return;
-    }
-    if (event.type === 'message_delta') {
-      if (event.delta && typeof event.delta.stop_reason === 'string') stopReason = event.delta.stop_reason;
-      if (event.usage && typeof event.usage === 'object') usage = { ...usage, ...event.usage };
-    }
-  };
-
-  return {
-    append(chunk: Buffer) {
-      const text = decoder.decode(chunk, { stream: true });
-      if (!text) return;
-      buffer += text.replace(/\r\n/g, '\n');
-      let separator = buffer.indexOf('\n\n');
-      while (separator >= 0) {
-        const frame = buffer.slice(0, separator);
-        buffer = buffer.slice(separator + 2);
-        processFrame(frame);
-        separator = buffer.indexOf('\n\n');
-      }
-    },
-    summary() {
-      const tail = decoder.decode();
-      if (tail) this.append(Buffer.from(tail));
-      if (buffer.trim()) {
-        processFrame(buffer);
-        buffer = '';
-      }
-      return {
-        model,
-        usage,
-        thinking: thinking.value(),
-        text: text.value(),
-        stopReason,
-        eventCount,
-        parseErrorCount,
-        truncated: thinking.truncated() || text.truncated()
-      };
-    }
-  };
-}
-
-function createBoundedTextAccumulator() {
-  const chunks: string[] = [];
-  let length = 0;
-  let wasTruncated = false;
-  return {
-    append(value: string) {
-      if (!value) return;
-      if (length >= DETAIL_CAPTURE_MAX_LENGTH) {
-        wasTruncated = true;
-        return;
-      }
-      const remaining = DETAIL_CAPTURE_MAX_LENGTH - length;
-      chunks.push(value.slice(0, remaining));
-      length += Math.min(value.length, remaining);
-      if (value.length > remaining) wasTruncated = true;
-    },
-    value() {
-      return chunks.join('');
-    },
-    truncated() {
-      return wasTruncated;
-    }
-  };
 }
 
 function resolveProxyTarget(url: string): { proxyKey: string; suffix: string } | null {
@@ -401,15 +317,6 @@ function responseHeaders(response: Response): Record<string, string> {
   return output;
 }
 
-function serializeRequestBody(request: FastifyRequest): BodyInit | undefined {
-  if (request.method === 'GET' || request.method === 'HEAD') return undefined;
-  const body = request.body;
-  if (body === undefined) return undefined;
-  if (typeof body === 'string') return body;
-  if (body instanceof Uint8Array) return body as BodyInit;
-  return JSON.stringify(body);
-}
-
 function shouldPassthroughResponse(response: Response, contentType: string): boolean {
   if (!response.body) return false;
   if (contentType.includes('text/event-stream')) return true;
@@ -419,13 +326,6 @@ function shouldPassthroughResponse(response: Response, contentType: string): boo
 
 function shouldCaptureStreamingResponse(contentType: string): boolean {
   return contentType.includes('text/event-stream');
-}
-
-function parseSseJson(text: string): unknown {
-  const parsed = safeJson(text);
-  if (parsed !== undefined) return parsed;
-  if (text.includes('\\"')) return safeJson(text.replace(/\\"/g, '"'));
-  return undefined;
 }
 
 function safeJson(text: string): unknown {

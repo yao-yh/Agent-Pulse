@@ -5,6 +5,48 @@ import Fastify from 'fastify';
 import { describe, expect, it } from 'vitest';
 import { createStorage } from '@agent-pulse/storage';
 import { registerProxyRoutes } from './index.js';
+import { selectResponseParser } from './parsers.js';
+import { selectRequestSerializer } from './serializers.js';
+
+describe('proxy serializer and parser selection', () => {
+  it('selects model-specific serializers and falls back to protocol defaults', () => {
+    expect(selectRequestSerializer({ apiProtocol: 'openai-compatible', body: { model: 'GPT-5.5' } })).toMatchObject({
+      matchedBy: 'model',
+      modelProvider: 'chatgpt',
+      serializer: { id: 'openai-compatible.chatgpt' }
+    });
+    expect(selectRequestSerializer({ apiProtocol: 'openai-compatible', body: { model: 'glm-5.1' } })).toMatchObject({
+      matchedBy: 'model',
+      modelProvider: 'glm',
+      serializer: { id: 'openai-compatible.glm' }
+    });
+    expect(selectRequestSerializer({ apiProtocol: 'anthropic-compatible', body: { model: 'deepseek-v4-pro' } })).toMatchObject({
+      matchedBy: 'model',
+      modelProvider: 'deepseek',
+      serializer: { id: 'anthropic-compatible.deepseek' }
+    });
+    expect(selectRequestSerializer({ apiProtocol: 'anthropic-compatible', body: { model: 'unknown-model' } })).toMatchObject({
+      matchedBy: 'protocol',
+      serializer: { id: 'anthropic-compatible.default' }
+    });
+  });
+
+  it('selects agent parsers by MAJOR.MINOR and falls back to the latest parser', () => {
+    expect(selectResponseParser({ agent: 'claude-code', apiProtocol: 'anthropic-compatible', agentVersion: '1.0.7', maxTextLength: 1024 })).toMatchObject({
+      matchedBy: 'agent-major-minor',
+      parser: { id: 'claude-code.1.0' }
+    });
+    expect(selectResponseParser({ agent: 'claude-code', apiProtocol: 'anthropic-compatible', agentVersion: '9.9.0', maxTextLength: 1024 })).toMatchObject({
+      matchedBy: 'agent-latest',
+      dynamicLoadDeferred: true,
+      parser: { id: 'claude-code.1.0' }
+    });
+    expect(selectResponseParser({ agent: 'unknown-agent', apiProtocol: 'openai-compatible', maxTextLength: 1024 })).toMatchObject({
+      matchedBy: 'protocol-latest',
+      parser: { id: 'openai-compatible.1.0' }
+    });
+  });
+});
 
 describe('proxy route mappings', () => {
   it('uses proxyKey mapping for Claude Code upstream and preserves path/query', async () => {
@@ -296,6 +338,44 @@ describe('proxy route mappings', () => {
     await close();
   });
 
+  it('extracts model, usage, thinking, and text from OpenAI-style SSE through the selected agent parser', async () => {
+    const { proxy, storage, upstreamBaseUrl, close } = await createProxyHarness();
+    storage.upsertProxyRouteMapping({
+      integration: 'codex',
+      provider: 'codex',
+      proxyKey: 'codex',
+      apiProtocol: 'openai-compatible',
+      localRoute: '/proxy/codex',
+      proxyBaseUrl: 'http://127.0.0.1:8080/proxy/codex',
+      upstreamBaseUrl
+    });
+
+    const response = await proxy.inject({
+      method: 'GET',
+      url: '/proxy/codex/openai-sse',
+      headers: { 'x-agent-version': '9.9.0' }
+    });
+    const record = storage.listProxyRequests()[0];
+    const body = (record?.responseSummary?.value as any)?.body;
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toContain('data: {"id":"chatcmpl-test"');
+    expect(body).toMatchObject({
+      model: 'GPT-5.5',
+      usage: {
+        prompt_tokens: 12,
+        completion_tokens: 3,
+        total_tokens: 15
+      },
+      thinking: 'plan',
+      text: 'Hello',
+      stopReason: 'stop',
+      parseErrorCount: 0
+    });
+    expect(JSON.stringify(record)).not.toContain('chatcmpl-test');
+    await close();
+  });
+
   it('normalizes legacy mappings without proxyKey and apiProtocol', async () => {
     const { storage, upstreamBaseUrl, close } = await createProxyHarness();
     storage.setSetting('proxy.routeMappings', [
@@ -360,6 +440,20 @@ async function createProxyHarness() {
       '',
       'event: message_stop',
       'data: {"type":"message_stop"}',
+      '',
+      ''
+    ].join('\n');
+  });
+  upstream.get('/openai-sse', async (_request, reply) => {
+    reply.header('content-type', 'text/event-stream');
+    return [
+      'data: {"id":"chatcmpl-test","model":"GPT-5.5","choices":[{"delta":{"reasoning_content":"plan"}}]}',
+      '',
+      'data: {"id":"chatcmpl-test","model":"GPT-5.5","choices":[{"delta":{"content":"Hel"}}]}',
+      '',
+      'data: {"id":"chatcmpl-test","model":"GPT-5.5","choices":[{"delta":{"content":"lo"},"finish_reason":"stop"}],"usage":{"prompt_tokens":12,"completion_tokens":3,"total_tokens":15}}',
+      '',
+      'data: [DONE]',
       '',
       ''
     ].join('\n');
