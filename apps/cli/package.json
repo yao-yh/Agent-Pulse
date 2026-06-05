@@ -2,6 +2,11 @@
   "name": "@cashew-dev/agent-pulse",
   "version": "0.0.2",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yao-yh/Agent-Pulse.git",
+    "directory": "apps/cli"
+  },
   "bin": {
     "agent-pulse": "dist/index.js"
   },

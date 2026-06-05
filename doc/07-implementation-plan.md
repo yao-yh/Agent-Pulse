@@ -5,9 +5,9 @@ This file is the implementation index for AgentPulse. It must stay aligned with 
 ## Root Configuration
 
 - Responsibility: workspace orchestration, shared TypeScript settings, package scripts, and documentation structure checks.
-- Primary files: `package.json`, `pnpm-workspace.yaml`, `tsconfig.base.json`, `turbo.json`, `AGENTS.md`, `scripts/check-doc-structure.mjs`.
+- Primary files: `package.json`, `pnpm-workspace.yaml`, `tsconfig.base.json`, `turbo.json`, `AGENTS.md`, `.github/workflows/*.yml`, `scripts/check-doc-structure.mjs`, `scripts/check-release-version.mjs`.
 - Public APIs: root scripts `build`, `test`, `dev`, `start`, `agent-pulse`, `check:docs`; publish helper scripts for the npm package.
-- Data flow: root scripts delegate work to apps and packages through pnpm filters and Turbo.
+- Data flow: root scripts delegate work to apps and packages through pnpm filters and Turbo; GitHub Actions runs CI on all branch pushes and Pull Requests, while npm publishing is limited to version-matching `vX.Y.Z` tags whose commits are already reachable from `origin/main`.
 - Test coverage expectations: root build/test/check scripts must validate all business packages and the implementation-plan structure.
 
 ## apps/cli

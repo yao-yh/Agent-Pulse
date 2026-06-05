@@ -1,0 +1,77 @@
+name: Publish npm package
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to publish, for example v0.0.3'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    name: Publish @cashew-dev/agent-pulse
+    runs-on: ubuntu-latest
+    environment: npm
+
+    steps:
+      - name: Checkout release ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - name: Check release branch
+        run: |
+          RELEASE_TAG="${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
+          git fetch origin main --tags --force
+          TAG_COMMIT="$(git rev-list -n 1 "$RELEASE_TAG")"
+          if [ -z "$TAG_COMMIT" ]; then
+            echo "Release tag $RELEASE_TAG was not found."
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$TAG_COMMIT" origin/main; then
+            echo "Release tag $RELEASE_TAG must point to a commit already reachable from origin/main."
+            exit 1
+          fi
+          echo "Release tag $RELEASE_TAG is on main."
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.14.0
+
+      - name: Enable pnpm
+        run: corepack enable
+
+      - name: Upgrade npm for trusted publishing
+        run: npm install -g npm@^11.5.1
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check release version
+        run: node scripts/check-release-version.mjs "${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
+
+      - name: Check documentation structure
+        run: pnpm check:docs
+
+      - name: Build
+        run: pnpm build
+
+      - name: Test
+        run: pnpm test
+
+      - name: Pack npm artifact
+        run: pnpm --filter @cashew-dev/agent-pulse pack
+
+      - name: Publish to npm
+        working-directory: apps/cli
+        run: npm publish --access public --provenance

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { existsSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Command } from 'commander';
@@ -8,12 +9,15 @@ import { scanInventory } from '@agent-pulse/inventory';
 import { applyInstall, planInstall, rollbackLatest, scan } from '@agent-pulse/installer';
 import { createStorage } from '@agent-pulse/storage';
 
+const require = createRequire(import.meta.url);
+// Keep the CLI --version output aligned with the npm package published by CI.
+const packageJson = require('../package.json') as { version: string };
 const program = new Command();
 
 program
   .name('agent-pulse')
   .description('Local event center for AI agent tools')
-  .version('0.1.0');
+  .version(packageJson.version);
 
 program.command('scan').description('Scan AI agent integrations').action(async () => {
   const results = await scan(process.cwd());

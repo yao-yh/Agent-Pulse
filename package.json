@@ -3,6 +3,10 @@
   "version": "0.0.2",
   "private": true,
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yao-yh/Agent-Pulse.git"
+  },
   "packageManager": "pnpm@10.11.1",
   "scripts": {
     "build": "turbo build",
