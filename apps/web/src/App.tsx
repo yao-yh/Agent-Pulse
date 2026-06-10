@@ -3,7 +3,7 @@ import { Alert, App as AntApp, Badge, Button, Card, Descriptions, Drawer, Form, 
 import type { ColumnsType } from 'antd/es/table';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
-type Tab = 'agents' | 'events' | 'tasks' | 'inventory' | 'plans' | 'proxy' | 'notifications' | 'doctor';
+type Tab = 'agents' | 'sessions' | 'events' | 'tasks' | 'inventory' | 'plans' | 'proxy' | 'notifications' | 'doctor';
 type Scope = 'workspace' | 'user' | 'global';
 
 interface AgentRow {
@@ -35,6 +35,7 @@ interface ProxyRequestRow {
   provider: string;
   proxyKey?: string;
   apiProtocol?: string;
+  sessionId?: string;
   method: string;
   path: string;
   upstreamUrl: string;
@@ -46,12 +47,34 @@ interface ProxyRequestRow {
   createdAt: string;
 }
 
+interface ProxySessionRow {
+  id: string;
+  provider: string;
+  requestCount: number;
+  errorCount: number;
+  firstRequestAt: string;
+  latestRequestAt: string;
+  latestStatusCode?: number;
+  latestPath?: string;
+}
+
+interface PromptPartRow {
+  kind?: string;
+  role?: string;
+  index?: number;
+  name?: string;
+  id?: string;
+  text?: string;
+  input?: unknown;
+}
+
 const defaultProxyBaseUrl = 'http://127.0.0.1:8080';
 
 export function App() {
   const [tab, setTab] = useState<Tab>('agents');
   const tabs: Array<[Tab, string]> = [
     ['agents', 'Agents'],
+    ['sessions', 'Sessions'],
     ['events', 'Events'],
     ['tasks', 'Tasks'],
     ['inventory', 'Inventory'],
@@ -80,6 +103,7 @@ export function App() {
           <Menu mode="horizontal" selectedKeys={[tab]} items={tabs.map(([key, label]) => ({ key, label }))} onClick={({ key }) => setTab(key as Tab)} />
           <section className="pageContent">
             {tab === 'agents' && <Agents />}
+            {tab === 'sessions' && <Sessions />}
             {tab === 'events' && <Events />}
             {tab === 'tasks' && <Tasks />}
             {tab === 'inventory' && <Inventory />}
@@ -284,6 +308,101 @@ function Plans() {
   );
 }
 
+function Sessions() {
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  const [selectedRequestId, setSelectedRequestId] = useState<string | null>(null);
+  const { data: sessionData } = useApi('/api/proxy/sessions');
+  const sessions = Array.isArray(sessionData) ? sessionData as ProxySessionRow[] : [];
+  const activeSessionId = selectedSessionId || sessions[0]?.id || null;
+  const { data: requestData, isFetching } = useQuery({
+    queryKey: ['/api/proxy/requests/session', activeSessionId],
+    queryFn: () => fetchJson<ProxyRequestRow[]>(`/api/proxy/requests?sessionId=${encodeURIComponent(activeSessionId || '')}`),
+    enabled: Boolean(activeSessionId)
+  });
+  const { data: detail, isFetching: detailLoading } = useQuery({
+    queryKey: ['/api/proxy/requests/detail', selectedRequestId],
+    queryFn: () => fetchJson<ProxyRequestRow>(`/api/proxy/requests/${encodeURIComponent(selectedRequestId || '')}`),
+    enabled: Boolean(selectedRequestId)
+  });
+  const requests = Array.isArray(requestData) ? requestData : [];
+  const sessionColumns: ColumnsType<ProxySessionRow> = [
+    {
+      title: 'Session',
+      dataIndex: 'id',
+      key: 'id',
+      ellipsis: true,
+      render: (value, row) => <Button type={row.id === activeSessionId ? 'primary' : 'default'} onClick={() => setSelectedSessionId(row.id)}>{value}</Button>
+    },
+    { title: 'Provider', dataIndex: 'provider', key: 'provider', width: 130 },
+    { title: 'Requests', dataIndex: 'requestCount', key: 'requestCount', width: 110 },
+    { title: 'Errors', dataIndex: 'errorCount', key: 'errorCount', width: 100, render: (value) => <Tag color={value ? 'red' : 'green'}>{value}</Tag> },
+    { title: 'Latest Status', key: 'latestStatusCode', width: 130, render: (_, row) => row.latestStatusCode ?? '-' },
+    { title: 'Latest Path', dataIndex: 'latestPath', key: 'latestPath', ellipsis: true },
+    { title: 'Latest Request', dataIndex: 'latestRequestAt', key: 'latestRequestAt', width: 220 }
+  ];
+  const requestColumns: ColumnsType<ProxyRequestRow> = [
+    { title: 'Method', dataIndex: 'method', key: 'method', width: 100 },
+    { title: 'Path', dataIndex: 'path', key: 'path', ellipsis: true },
+    {
+      title: 'Status',
+      key: 'status',
+      width: 110,
+      render: (_, row) => {
+        if (!row.statusCode) return <Tag color={row.error ? 'red' : 'default'}>-</Tag>;
+        const color = row.statusCode >= 500 ? 'red' : row.statusCode >= 400 ? 'orange' : 'green';
+        return <Tag color={color}>{row.statusCode}</Tag>;
+      }
+    },
+    { title: 'Duration', key: 'duration', width: 120, render: (_, row) => row.durationMs == null ? '-' : `${row.durationMs} ms` },
+    { title: 'Created', dataIndex: 'createdAt', key: 'createdAt', width: 220 },
+    { title: 'Action', key: 'action', width: 110, render: (_, row) => <Button onClick={() => setSelectedRequestId(row.id)}>Details</Button> }
+  ];
+  return (
+    <div className="stack">
+      <Card title="Sessions">
+        <Table rowKey="id" columns={sessionColumns} dataSource={sessions} pagination={false} scroll={{ x: 1100 }} rowClassName={(row) => row.id === activeSessionId ? 'selectedRow' : ''} />
+        {!sessions.length && <div className="tableEmpty"><Empty text="No captured sessions yet." /></div>}
+      </Card>
+      <Card title={activeSessionId ? `Requests in ${activeSessionId}` : 'Requests'}>
+        <Table rowKey="id" columns={requestColumns} dataSource={requests} loading={isFetching} pagination={false} scroll={{ x: 900 }} />
+        {!activeSessionId && <div className="tableEmpty"><Empty text="Select a session to inspect requests." /></div>}
+        {activeSessionId && !requests.length && !isFetching && <div className="tableEmpty"><Empty text="No requests in this session." /></div>}
+      </Card>
+      <Drawer title="Proxy Request / Response Details" open={Boolean(selectedRequestId)} onClose={() => setSelectedRequestId(null)} width={720}>
+        {detailLoading && <Empty text="Loading request details..." />}
+        {detail && (
+          <div className="proxyDetailStack">
+            <Descriptions bordered size="small" column={1}>
+              <Descriptions.Item label="ID">{detail.id}</Descriptions.Item>
+              <Descriptions.Item label="Provider">{detail.provider}</Descriptions.Item>
+              <Descriptions.Item label="Session">{detail.sessionId || '-'}</Descriptions.Item>
+              <Descriptions.Item label="Method">{detail.method}</Descriptions.Item>
+              <Descriptions.Item label="Path">{detail.path}</Descriptions.Item>
+              <Descriptions.Item label="Upstream URL">{detail.upstreamUrl}</Descriptions.Item>
+              <Descriptions.Item label="Status">{detail.statusCode ?? '-'}</Descriptions.Item>
+              <Descriptions.Item label="Duration">{detail.durationMs == null ? '-' : `${detail.durationMs} ms`}</Descriptions.Item>
+              <Descriptions.Item label="Created">{detail.createdAt}</Descriptions.Item>
+              <Descriptions.Item label="Error">{detail.error || '-'}</Descriptions.Item>
+            </Descriptions>
+            <section>
+              <Typography.Title level={5}>Prompt Parts</Typography.Title>
+              <PromptParts value={capturedField(detail.requestSummary, 'promptParts')} />
+            </section>
+            <section>
+              <Typography.Title level={5}>Request Body</Typography.Title>
+              <JsonBlock value={capturedField(detail.requestSummary, 'body')} />
+            </section>
+            <section>
+              <Typography.Title level={5}>Response Content</Typography.Title>
+              <JsonBlock value={capturedField(detail.responseSummary, 'body')} />
+            </section>
+          </div>
+        )}
+      </Drawer>
+    </div>
+  );
+}
+
 function ProxyRequests() {
   const [selectedRequestId, setSelectedRequestId] = useState<string | null>(null);
   const { data } = useApi('/api/proxy/requests');
@@ -297,6 +416,7 @@ function ProxyRequests() {
     { title: 'Provider', dataIndex: 'provider', key: 'provider', width: 120 },
     { title: 'Proxy Key', key: 'proxyKey', width: 140, render: (_, row) => row.proxyKey || '-' },
     { title: 'API 标准', key: 'apiProtocol', width: 180, render: (_, row) => row.apiProtocol || '-' },
+    { title: 'Session', key: 'sessionId', width: 180, ellipsis: true, render: (_, row) => row.sessionId || '-' },
     { title: 'Method', dataIndex: 'method', key: 'method', width: 100 },
     { title: 'Path', dataIndex: 'path', key: 'path', ellipsis: true },
     {
@@ -321,7 +441,7 @@ function ProxyRequests() {
   ];
   return (
     <Card title="Proxy Requests">
-      <Table rowKey="id" columns={columns} dataSource={rows} pagination={false} scroll={{ x: 1200 }} />
+      <Table rowKey="id" columns={columns} dataSource={rows} pagination={false} scroll={{ x: 1380 }} />
       {!rows.length && <div className="tableEmpty"><Empty text="No proxy traffic captured yet." /></div>}
       <Drawer title="Proxy Request / Response Details" open={Boolean(selectedRequestId)} onClose={() => setSelectedRequestId(null)} width={720}>
         {detailLoading && <Empty text="Loading request details..." />}
@@ -332,6 +452,7 @@ function ProxyRequests() {
               <Descriptions.Item label="Provider">{detail.provider}</Descriptions.Item>
               <Descriptions.Item label="Proxy Key">{detail.proxyKey || '-'}</Descriptions.Item>
               <Descriptions.Item label="API Protocol">{detail.apiProtocol || '-'}</Descriptions.Item>
+              <Descriptions.Item label="Session">{detail.sessionId || '-'}</Descriptions.Item>
               <Descriptions.Item label="Method">{detail.method}</Descriptions.Item>
               <Descriptions.Item label="Path">{detail.path}</Descriptions.Item>
               <Descriptions.Item label="Upstream URL">{detail.upstreamUrl}</Descriptions.Item>
@@ -340,6 +461,10 @@ function ProxyRequests() {
               <Descriptions.Item label="Created">{detail.createdAt}</Descriptions.Item>
               <Descriptions.Item label="Error">{detail.error || '-'}</Descriptions.Item>
             </Descriptions>
+            <section>
+              <Typography.Title level={5}>Prompt Parts</Typography.Title>
+              <PromptParts value={capturedField(detail.requestSummary, 'promptParts')} />
+            </section>
             <section>
               <Typography.Title level={5}>Request Body</Typography.Title>
               <JsonBlock value={capturedField(detail.requestSummary, 'body')} />
@@ -385,6 +510,20 @@ function JsonRows({ rows }: { rows: unknown[] }) {
 
 function JsonBlock({ value }: { value: unknown }) {
   return <pre>{JSON.stringify(value, null, 2)}</pre>;
+}
+
+function PromptParts({ value }: { value: unknown }) {
+  const rows = Array.isArray(value) ? value as PromptPartRow[] : [];
+  if (!rows.length) return <Empty text="No prompt parts parsed for this request." />;
+  const columns: ColumnsType<PromptPartRow> = [
+    { title: 'Kind', dataIndex: 'kind', key: 'kind', width: 120, render: (kind) => <Tag>{kind || '-'}</Tag> },
+    { title: 'Role', dataIndex: 'role', key: 'role', width: 100, render: (role) => role || '-' },
+    { title: 'Name', dataIndex: 'name', key: 'name', width: 170, ellipsis: true, render: (name) => name || '-' },
+    { title: 'ID', dataIndex: 'id', key: 'id', width: 150, ellipsis: true, render: (id) => id || '-' },
+    { title: 'Text', dataIndex: 'text', key: 'text', ellipsis: true, render: (text) => text || '-' },
+    { title: 'Input', dataIndex: 'input', key: 'input', width: 220, render: (input) => input === undefined ? '-' : <Typography.Text code>{JSON.stringify(input)}</Typography.Text> }
+  ];
+  return <Table rowKey={(_, index) => String(index)} columns={columns} dataSource={rows} pagination={false} size="small" scroll={{ x: 900 }} />;
 }
 
 function capturedField(summary: Record<string, unknown> | undefined, field: string): unknown {

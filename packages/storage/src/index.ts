@@ -11,6 +11,7 @@ import {
   nowIso,
   ProxyRequestRecord,
   ProxyRouteMapping,
+  ProxySessionRecord,
   SessionRecord,
   TaskRecord,
   eventTypeToTaskStatus
@@ -191,6 +192,7 @@ class SqliteAgentPulseStorage {
       CREATE TABLE IF NOT EXISTS proxy_requests (
         id TEXT PRIMARY KEY,
         provider TEXT NOT NULL,
+        session_id TEXT,
         method TEXT NOT NULL,
         path TEXT NOT NULL,
         upstream_url TEXT NOT NULL,
@@ -262,6 +264,7 @@ class SqliteAgentPulseStorage {
         value_json TEXT NOT NULL
       );
     `);
+    this.ensureColumn('proxy_requests', 'session_id', 'TEXT');
   }
 
   insertEvent(event: AgentEvent): { inserted: boolean; event: AgentEvent } {
@@ -428,11 +431,12 @@ class SqliteAgentPulseStorage {
     };
     this.db
       .prepare(
-        `INSERT INTO proxy_requests (id, provider, method, path, upstream_url, status_code, duration_ms, request_summary_json, response_summary_json, error, created_at)
-         VALUES (@id, @provider, @method, @path, @upstreamUrl, @statusCode, @durationMs, @requestSummaryJson, @responseSummaryJson, @error, @createdAt)`
+        `INSERT INTO proxy_requests (id, provider, session_id, method, path, upstream_url, status_code, duration_ms, request_summary_json, response_summary_json, error, created_at)
+         VALUES (@id, @provider, @sessionId, @method, @path, @upstreamUrl, @statusCode, @durationMs, @requestSummaryJson, @responseSummaryJson, @error, @createdAt)`
       )
       .run({
         ...record,
+        sessionId: record.sessionId ?? null,
         statusCode: record.statusCode ?? null,
         durationMs: record.durationMs ?? null,
         requestSummaryJson: Object.keys(requestSummary).length ? JSON.stringify(requestSummary) : null,
@@ -441,11 +445,47 @@ class SqliteAgentPulseStorage {
       });
   }
 
-  listProxyRequests(limit = 100): ProxyRequestRecord[] {
+  listProxyRequests(limit = 100, filters: { sessionId?: string } = {}): ProxyRequestRecord[] {
+    const rows = filters.sessionId
+      ? this.db.prepare('SELECT * FROM proxy_requests WHERE session_id = ? ORDER BY created_at DESC LIMIT ?').all(filters.sessionId, limit)
+      : this.db.prepare('SELECT * FROM proxy_requests ORDER BY created_at DESC LIMIT ?').all(limit);
+    return rows.map(rowToProxyRequest);
+  }
+
+  listProxySessions(limit = 100): ProxySessionRecord[] {
     return this.db
-      .prepare('SELECT * FROM proxy_requests ORDER BY created_at DESC LIMIT ?')
+      .prepare(
+        `SELECT
+          session_id,
+          provider,
+          COUNT(*) AS request_count,
+          SUM(CASE WHEN error IS NOT NULL THEN 1 ELSE 0 END) AS error_count,
+          MIN(created_at) AS first_request_at,
+          MAX(created_at) AS latest_request_at,
+          (
+            SELECT status_code
+            FROM proxy_requests latest
+            WHERE latest.session_id = proxy_requests.session_id
+              AND latest.provider = proxy_requests.provider
+            ORDER BY latest.created_at DESC
+            LIMIT 1
+          ) AS latest_status_code,
+          (
+            SELECT path
+            FROM proxy_requests latest
+            WHERE latest.session_id = proxy_requests.session_id
+              AND latest.provider = proxy_requests.provider
+            ORDER BY latest.created_at DESC
+            LIMIT 1
+          ) AS latest_path
+         FROM proxy_requests
+         WHERE session_id IS NOT NULL AND session_id != ''
+         GROUP BY session_id, provider
+         ORDER BY latest_request_at DESC
+         LIMIT ?`
+      )
       .all(limit)
-      .map(rowToProxyRequest);
+      .map(rowToProxySession);
   }
 
   getProxyRequest(id: string): ProxyRequestRecord | undefined {
@@ -585,6 +625,11 @@ class SqliteAgentPulseStorage {
       .all()
       .map((row: any) => JSON.parse(row.item_json));
   }
+
+  private ensureColumn(table: string, column: string, definition: string): void {
+    const columns = this.db.prepare(`PRAGMA table_info(${table})`).all().map((row: any) => row.name);
+    if (!columns.includes(column)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
 }
 
 export function createStorage(options?: StorageOptions): AgentPulseStorage {
@@ -616,6 +661,7 @@ function rowToProxyRequest(row: any): ProxyRequestRecord {
     provider: row.provider,
     proxyKey: typeof requestSummary?.proxyKey === 'string' ? requestSummary.proxyKey : undefined,
     apiProtocol: typeof requestSummary?.apiProtocol === 'string' ? requestSummary.apiProtocol : undefined,
+    sessionId: row.session_id ?? undefined,
     method: row.method,
     path: row.path,
     upstreamUrl: row.upstream_url,
@@ -625,6 +671,19 @@ function rowToProxyRequest(row: any): ProxyRequestRecord {
     responseSummary: parseJson(row.response_summary_json),
     error: row.error ?? undefined,
     createdAt: row.created_at
+  };
+}
+
+function rowToProxySession(row: any): ProxySessionRecord {
+  return {
+    id: row.session_id,
+    provider: row.provider,
+    requestCount: Number(row.request_count || 0),
+    errorCount: Number(row.error_count || 0),
+    firstRequestAt: row.first_request_at,
+    latestRequestAt: row.latest_request_at,
+    latestStatusCode: row.latest_status_code ?? undefined,
+    latestPath: row.latest_path ?? undefined
   };
 }
 

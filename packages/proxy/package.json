@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@agent-pulse/core": "workspace:*",
+    "@agent-pulse/integrations": "workspace:*",
     "@agent-pulse/storage": "workspace:*",
     "fastify": "^5.8.5"
   }

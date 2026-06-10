@@ -79,6 +79,10 @@ pre {
   padding-top: 12px;
 }
 
+.selectedRow td {
+  background: #eef6ff !important;
+}
+
 .proxyDetailStack {
   display: flex;
   flex-direction: column;

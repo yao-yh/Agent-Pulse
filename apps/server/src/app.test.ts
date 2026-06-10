@@ -96,6 +96,7 @@ describe('server app', () => {
       provider: 'claude-code',
       proxyKey: 'claude-code',
       apiProtocol: 'anthropic-compatible',
+      sessionId: 'session-detail',
       method: 'POST',
       path: '/proxy/claude-code/v1/messages',
       upstreamUrl: 'https://api.anthropic.com/v1/messages',
@@ -116,11 +117,92 @@ describe('server app', () => {
       id: 'proxy_detail_test',
       proxyKey: 'claude-code',
       apiProtocol: 'anthropic-compatible',
+      sessionId: 'session-detail',
       upstreamUrl: 'https://api.anthropic.com/v1/messages',
       requestSummary: { value: { body: { message: 'hello', token: '<redacted>' } } }
     });
     expect(missing.statusCode).toBe(404);
     expect(missing.json()).toEqual({ error: 'proxy_request_not_found', id: 'missing' });
+  });
+
+  it('filters proxy requests by session id', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agent-pulse-'));
+    const storage = createStorage({ databasePath: join(dir, 'test.db') });
+    storage.insertProxyRequest({
+      id: 'proxy_session_a',
+      provider: 'claude-code',
+      sessionId: 'session-a',
+      method: 'POST',
+      path: '/proxy/claude-code/v1/messages',
+      upstreamUrl: 'https://api.anthropic.com/v1/messages',
+      createdAt: '2026-06-04T00:00:00.000Z'
+    });
+    storage.insertProxyRequest({
+      id: 'proxy_session_b',
+      provider: 'claude-code',
+      sessionId: 'session-b',
+      method: 'POST',
+      path: '/proxy/claude-code/v1/messages',
+      upstreamUrl: 'https://api.anthropic.com/v1/messages',
+      createdAt: '2026-06-04T00:00:01.000Z'
+    });
+    const app = await buildApp({ storage, workspaceDir: dir });
+    apps.push(app);
+
+    const response = await app.inject({ method: 'GET', url: '/api/proxy/requests?sessionId=session-a' });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject([{ id: 'proxy_session_a', sessionId: 'session-a' }]);
+  });
+
+  it('returns proxy session summaries', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agent-pulse-'));
+    const storage = createStorage({ databasePath: join(dir, 'test.db') });
+    storage.insertProxyRequest({
+      id: 'proxy_session_summary_a1',
+      provider: 'claude-code',
+      sessionId: 'session-summary-a',
+      method: 'POST',
+      path: '/proxy/claude-code/v1/messages',
+      upstreamUrl: 'https://api.anthropic.com/v1/messages',
+      statusCode: 200,
+      createdAt: '2026-06-04T00:00:00.000Z'
+    });
+    storage.insertProxyRequest({
+      id: 'proxy_session_summary_a2',
+      provider: 'claude-code',
+      sessionId: 'session-summary-a',
+      method: 'POST',
+      path: '/proxy/claude-code/v1/messages/latest',
+      upstreamUrl: 'https://api.anthropic.com/v1/messages/latest',
+      statusCode: 500,
+      error: 'upstream_failed',
+      createdAt: '2026-06-04T00:00:01.000Z'
+    });
+    storage.insertProxyRequest({
+      id: 'proxy_session_summary_no_session',
+      provider: 'claude-code',
+      method: 'POST',
+      path: '/proxy/claude-code/v1/messages',
+      upstreamUrl: 'https://api.anthropic.com/v1/messages',
+      createdAt: '2026-06-04T00:00:02.000Z'
+    });
+    const app = await buildApp({ storage, workspaceDir: dir });
+    apps.push(app);
+
+    const response = await app.inject({ method: 'GET', url: '/api/proxy/sessions' });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject([
+      {
+        id: 'session-summary-a',
+        provider: 'claude-code',
+        requestCount: 2,
+        errorCount: 1,
+        latestStatusCode: 500,
+        latestPath: '/proxy/claude-code/v1/messages/latest'
+      }
+    ]);
   });
 
   it('scans and replaces Claude Code user config from the agents page flow', async () => {

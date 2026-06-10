@@ -290,6 +290,7 @@ export interface ProxyRequestRecord {
   provider: 'openai' | 'anthropic' | 'codex' | 'claude-code' | 'opencode';
   proxyKey?: string;
   apiProtocol?: ProxyApiProtocol;
+  sessionId?: string;
   method: string;
   path: string;
   upstreamUrl: string;
@@ -299,6 +300,38 @@ export interface ProxyRequestRecord {
   responseSummary?: Record<string, unknown>;
   error?: string;
   createdAt: string;
+}
+
+export type ProxyPromptPartKind =
+  | 'system'
+  | 'user'
+  | 'assistant'
+  | 'tool_call'
+  | 'tool_result'
+  | 'mcp_call'
+  | 'mcp_result'
+  | 'skill';
+
+export interface ProxyPromptPart {
+  kind: ProxyPromptPartKind;
+  role?: string;
+  index?: number;
+  name?: string;
+  id?: string;
+  text?: string;
+  input?: unknown;
+  metadata?: Record<string, unknown>;
+}
+
+export interface ProxySessionRecord {
+  id: string;
+  provider: ProxyRequestRecord['provider'];
+  requestCount: number;
+  errorCount: number;
+  firstRequestAt: string;
+  latestRequestAt: string;
+  latestStatusCode?: number;
+  latestPath?: string;
 }
 
 export interface AnalysisResult {

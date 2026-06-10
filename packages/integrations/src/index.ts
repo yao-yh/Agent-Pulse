@@ -4,6 +4,8 @@ import { adapters } from './adapters/index.js';
 import { IntegrationAdapter, PlanInstallInput } from './types.js';
 
 export { adapters } from './adapters/index.js';
+export { extractProxyRequestMetadata } from './request-metadata.js';
+export type { ProxyRequestMetadata } from './request-metadata.js';
 export type { DetectInput, IntegrationAdapter, PlanInstallInput } from './types.js';
 
 export function getAdapterByName(name: string): IntegrationAdapter | undefined {

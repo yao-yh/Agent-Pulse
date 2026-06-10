@@ -72,7 +72,16 @@ export async function buildApp(options: BuildAppOptions = {}) {
   });
   app.get('/api/sessions', async () => storage.listSessions());
   app.get('/api/tasks', async () => storage.listTasks());
-  app.get('/api/proxy/requests', async () => storage.listProxyRequests());
+  app.get('/api/proxy/requests', async (request) => {
+    const query = request.query as { limit?: string; sessionId?: string };
+    return storage.listProxyRequests(Number(query.limit || 100), {
+      sessionId: typeof query.sessionId === 'string' && query.sessionId.trim() ? query.sessionId.trim() : undefined
+    });
+  });
+  app.get('/api/proxy/sessions', async (request) => {
+    const query = request.query as { limit?: string };
+    return storage.listProxySessions(Number(query.limit || 100));
+  });
   app.get('/api/proxy/requests/:id', async (request, reply) => {
     const params = request.params as { id: string };
     const record = storage.getProxyRequest(params.id);

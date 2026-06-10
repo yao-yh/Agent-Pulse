@@ -1,6 +1,7 @@
 import { Readable, Transform } from 'node:stream';
 import { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { newId, nowIso, ProxyRequestRecord, ProxyRouteMapping, redactSecretString } from '@agent-pulse/core';
+import { extractProxyRequestMetadata } from '@agent-pulse/integrations';
 import { AgentPulseStorage } from '@agent-pulse/storage';
 import { detectAgentVersion, selectResponseParser } from './parsers.js';
 import type { VersionedAgentResponseParser } from './parsers.js';
@@ -53,7 +54,8 @@ async function handleProxy(
   delete headers['content-length'];
   const serializerSelection = selectRequestSerializer({ apiProtocol: mapping.apiProtocol, body: request.body });
   const body = serializerSelection.serializer.serialize({ method: request.method, body: request.body });
-  const requestSummary = captureRequest(request, body, mapping, serializerSelection);
+  const requestMetadata = extractProxyRequestMetadata({ mapping, body: request.body });
+  const requestSummary = captureRequest(request, body, mapping, serializerSelection, requestMetadata);
 
   try {
     const response = await fetch(upstreamUrl, {
@@ -77,19 +79,19 @@ async function handleProxy(
           response,
           contentType,
           parser: parserSelection.parser,
-          onComplete: (responseSummary) => storage.insertProxyRequest(baseRecord(id, mapping, request, upstreamUrl, started, requestSummary, response.status, responseSummary))
+          onComplete: (responseSummary) => storage.insertProxyRequest(baseRecord(id, mapping, request, upstreamUrl, started, requestSummary, requestMetadata, response.status, responseSummary))
         }));
       }
-      storage.insertProxyRequest(baseRecord(id, mapping, request, upstreamUrl, started, requestSummary, response.status, capturePassthroughResponse(response, contentType)));
+      storage.insertProxyRequest(baseRecord(id, mapping, request, upstreamUrl, started, requestSummary, requestMetadata, response.status, capturePassthroughResponse(response, contentType)));
       return reply.send(response.body ? Readable.fromWeb(response.body as any) : undefined);
     }
 
     const text = await response.text();
-    storage.insertProxyRequest(baseRecord(id, mapping, request, upstreamUrl, started, requestSummary, response.status, captureTextResponse(response, contentType, text)));
+    storage.insertProxyRequest(baseRecord(id, mapping, request, upstreamUrl, started, requestSummary, requestMetadata, response.status, captureTextResponse(response, contentType, text)));
     return reply.send(text);
   } catch (error) {
     storage.insertProxyRequest({
-      ...baseRecord(id, mapping, request, upstreamUrl, started, requestSummary),
+      ...baseRecord(id, mapping, request, upstreamUrl, started, requestSummary, requestMetadata),
       error: String(error)
     });
     reply.status(502).send({ error: 'proxy_failed', message: String(error) });
@@ -103,6 +105,7 @@ function baseRecord(
   upstreamUrl: string,
   started: number,
   requestSummary: Record<string, unknown>,
+  requestMetadata: { sessionId?: string },
   statusCode?: number,
   responseSummary?: Record<string, unknown>
 ): ProxyRequestRecord {
@@ -111,6 +114,7 @@ function baseRecord(
     provider: mapping.provider as ProxyRequestRecord['provider'],
     proxyKey: mapping.proxyKey,
     apiProtocol: mapping.apiProtocol,
+    sessionId: requestMetadata.sessionId,
     method: request.method,
     path: request.url,
     upstreamUrl,
@@ -126,7 +130,8 @@ function captureRequest(
   request: FastifyRequest,
   forwardedBody: BodyInit | undefined,
   mapping: ProxyRouteMapping,
-  serializerSelection: RequestSerializerSelection
+  serializerSelection: RequestSerializerSelection,
+  requestMetadata: { promptParts?: unknown[] }
 ): Record<string, unknown> {
   const target = resolveProxyTarget(request.url);
   const headers = captureField(normalizeHeaders(request.headers));
@@ -143,6 +148,7 @@ function captureRequest(
       model: serializerSelection.model,
       modelProvider: serializerSelection.modelProvider
     },
+    promptParts: requestMetadata.promptParts,
     headers: headers.value,
     headersTruncated: headers.truncated,
     headersOriginalLength: headers.originalLength,
@@ -252,7 +258,7 @@ function redactProxyCapture(value: unknown, key?: string): unknown {
 
 function isProxySensitiveKey(key: string, value: unknown): boolean {
   if (/(_tokens|_token_count|token_count)$/i.test(key) && typeof value === 'number') return false;
-  return /(api[_-]?key|token|secret|password|passwd|authorization|cookie|session)/i.test(key);
+  return /(api[_-]?key|token|secret|password|passwd|authorization|cookie|session|^user[_-]?id$)/i.test(key);
 }
 
 function normalizeCapturedBody(body: unknown): unknown {

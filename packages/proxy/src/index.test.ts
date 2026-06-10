@@ -195,6 +195,92 @@ describe('proxy route mappings', () => {
     await close();
   });
 
+  it('extracts Claude Code session IDs from metadata user_id objects and JSON strings', async () => {
+    const { proxy, storage, upstreamBaseUrl, close } = await createProxyHarness();
+    storage.upsertProxyRouteMapping({
+      integration: 'claude-code',
+      provider: 'claude-code',
+      proxyKey: 'claude-code',
+      apiProtocol: 'anthropic-compatible',
+      localRoute: '/proxy/claude-code',
+      proxyBaseUrl: 'http://127.0.0.1:8080/proxy/claude-code',
+      upstreamBaseUrl
+    });
+
+    await proxy.inject({
+      method: 'POST',
+      url: '/proxy/claude-code/v1/messages',
+      payload: { model: 'claude-test', metadata: { user_id: { session_id: 'session-object' } } }
+    });
+    await proxy.inject({
+      method: 'POST',
+      url: '/proxy/claude-code/v1/messages',
+      payload: { model: 'claude-test', metadata: { user_id: JSON.stringify({ session_id: 'session-json-string' }) } }
+    });
+
+    const records = storage.listProxyRequests();
+    const objectRecord = records.find((record) => record.sessionId === 'session-object');
+    const stringRecord = records.find((record) => record.sessionId === 'session-json-string');
+    expect(objectRecord).toBeTruthy();
+    expect(stringRecord).toBeTruthy();
+    expect((stringRecord?.requestSummary?.value as any)?.body.metadata.user_id).toBe('<redacted>');
+    expect((objectRecord?.requestSummary?.value as any)?.body.metadata.user_id).toBe('<redacted>');
+    await close();
+  });
+
+  it('extracts Claude Code prompt parts for prompts, tools, MCP, and skills', async () => {
+    const { proxy, storage, upstreamBaseUrl, close } = await createProxyHarness();
+    storage.upsertProxyRouteMapping({
+      integration: 'claude-code',
+      provider: 'claude-code',
+      proxyKey: 'claude-code',
+      apiProtocol: 'anthropic-compatible',
+      localRoute: '/proxy/claude-code',
+      proxyBaseUrl: 'http://127.0.0.1:8080/proxy/claude-code',
+      upstreamBaseUrl
+    });
+
+    await proxy.inject({
+      method: 'POST',
+      url: '/proxy/claude-code/v1/messages',
+      payload: {
+        system: 'You are Claude Code.\n## Skills\n- code-review: Review source changes.\nUse $imagegen when needed.',
+        messages: [
+          { role: 'user', content: 'Please inspect this repo.' },
+          {
+            role: 'assistant',
+            content: [
+              { type: 'text', text: 'I will inspect files.' },
+              { type: 'tool_use', id: 'toolu_ls', name: 'list_files', input: { path: '.' } },
+              { type: 'tool_use', id: 'toolu_mcp', name: 'mcp__github__search', input: { query: 'AgentPulse' } }
+            ]
+          },
+          {
+            role: 'user',
+            content: [
+              { type: 'tool_result', tool_use_id: 'toolu_ls', name: 'list_files', content: 'package.json' },
+              { type: 'tool_result', tool_use_id: 'toolu_mcp', name: 'mcp__github__search', content: [{ type: 'text', text: '1 result' }] }
+            ]
+          }
+        ]
+      }
+    });
+
+    const promptParts = (storage.listProxyRequests()[0]?.requestSummary?.value as any)?.promptParts;
+    expect(promptParts).toMatchObject([
+      { kind: 'system', role: 'system', text: expect.stringContaining('You are Claude Code') },
+      { kind: 'skill', role: 'system', name: 'code-review' },
+      { kind: 'skill', role: 'system', name: 'imagegen' },
+      { kind: 'user', role: 'user', text: 'Please inspect this repo.' },
+      { kind: 'assistant', role: 'assistant', text: 'I will inspect files.' },
+      { kind: 'tool_call', role: 'assistant', id: 'toolu_ls', name: 'list_files', input: { path: '.' } },
+      { kind: 'mcp_call', role: 'assistant', id: 'toolu_mcp', name: 'mcp__github__search', input: { query: 'AgentPulse' } },
+      { kind: 'tool_result', role: 'user', id: 'toolu_ls', name: 'list_files', text: 'package.json' },
+      { kind: 'mcp_result', role: 'user', id: 'toolu_mcp', name: 'mcp__github__search', text: '1 result' }
+    ]);
+    await close();
+  });
+
   it('captures raw forwarded request body when Fastify does not parse it as JSON', async () => {
     const { proxy, storage, upstreamBaseUrl, close } = await createProxyHarness();
     storage.upsertProxyRouteMapping({
