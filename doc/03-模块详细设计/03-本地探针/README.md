@@ -28,11 +28,11 @@ packages/probes
 
 一句话：
 
-> probes 层负责回答“本地环境里事实是什么”，integration/inventory/analyzer 再决定“这些事实意味着什么”。
+> 本地探针层负责回答“本地环境里的事实是什么”，集成、能力盘点和分析器再决定“这些事实意味着什么”。
 
-## 2. 为什么需要 probes 层
+## 2. 为什么需要本地探针层
 
-如果没有 probes 层，很多判断逻辑会散落在 integration、inventory、installer、analyzer 中。
+如果没有本地探针层，很多判断逻辑会散落在集成、能力盘点、安装器和分析器中。
 
 典型重复逻辑：
 
@@ -40,13 +40,13 @@ packages/probes
 - 某个命令是否存在。
 - 某个路径是否存在。
 - 某个文件是否像 `SKILL.md`。
-- 某个配置是否像 MCP server 配置。
+- 某个配置是否符合 MCP 服务器配置特征。
 - 某个 JSONC/TOML/YAML 文件如何安全解析。
-- 某个 env 字段是否是敏感信息。
+- 某个环境变量字段是否是敏感信息。
 - 某个目录是否是 Agent 配置目录。
 - 某个工具版本如何读取。
 
-这些能力应该沉到 probes 层，避免上层重复实现。
+这些能力应该下沉到本地探针层，避免上层重复实现。
 
 ## 3. 分层关系
 
@@ -66,12 +66,12 @@ apps/server
 关系说明：
 
 - `probes` 只依赖 `core` 中的基础类型，尽量少依赖其他包。
-- `inventory` 使用 `probes` 扫描 skills/MCP/插件。
+- `inventory` 使用 `probes` 扫描技能、MCP 和插件。
 - `integrations` 使用 `probes` 判断工具是否安装、配置是否存在、命令是否可用。
 - `installer` 使用 `probes` 做路径、权限、备份前检查。
 - `analyzers` 可以使用 `probes` 的分类器判断某个配置或事件是否高风险。
 
-## 4. probes 层职责
+## 4. 本地探针层职责
 
 ### 4.1 系统探针
 
@@ -80,9 +80,9 @@ apps/server
 能力：
 
 - 判断 OS：Windows、macOS、Linux。
-- 判断 shell：PowerShell、cmd、bash、zsh、fish。
+- 判断命令行环境：PowerShell、cmd、bash、zsh、fish。
 - 判断 home 目录。
-- 判断当前 workspace。
+- 判断当前工作区。
 - 判断常见配置目录。
 - 判断路径分隔符和可执行文件扩展名。
 
@@ -190,16 +190,16 @@ export interface ConfigProbe {
 - TOML/YAML 修改也应尽量结构化处理。
 - 不要使用字符串替换修改配置。
 
-### 4.5 Skill 判断器
+### 4.5 技能判断器
 
-判断某个目录或文件是否像 skill。
+判断某个目录或文件是否符合技能定义。
 
 判断依据：
 
 - 是否存在 `SKILL.md`。
 - 是否存在 manifest。
 - `SKILL.md` 是否包含名称、描述、触发规则等结构。
-- 是否位于已知 skills 目录下。
+- 是否位于已知技能目录下。
 - 是否被 Agent 配置引用。
 
 接口示例：
@@ -224,17 +224,17 @@ export interface SkillProbeResult {
 
 注意：
 
-- “像 skill”不等于“已加载”。
+- “符合技能定义”不等于“已加载”。
 - “配置中引用”不等于“运行时成功加载”。
-- 判断结果需要 confidence。
+- 判断结果需要包含置信度。
 
 ### 4.6 MCP 判断器
 
-判断某段配置是否像 MCP server 配置。
+判断某段配置是否符合 MCP 服务器配置特征。
 
 判断依据：
 
-- 是否包含 server 名称。
+- 是否包含服务器名称。
 - 是否包含 command/args。
 - 是否包含 url。
 - 是否包含 transport。
@@ -267,19 +267,19 @@ export interface McpServerCandidate {
 
 注意：
 
-- env value 默认不返回。
-- 如果 command 不存在，应标记风险。
-- 如果 url 使用非本地 HTTP，需要标记外部连接风险。
+- 默认不返回环境变量值。
+- 如果命令不存在，应标记风险。
+- 如果地址使用非本地 HTTP，需要标记外部连接风险。
 
 ### 4.7 插件判断器
 
-判断目录是否像 AgentPulse 插件或第三方 Agent 插件。
+判断目录是否符合 AgentPulse 插件或第三方 Agent 插件特征。
 
 判断依据：
 
 - 是否存在 manifest。
 - 是否存在 package.json。
-- 是否声明 channel/analyzer/integration/policy。
+- 是否声明通知渠道、分析器、集成或策略。
 - 是否被配置文件引用。
 
 接口示例：
@@ -316,7 +316,7 @@ export interface SecretProbe {
 
 ### 4.9 进程探针
 
-判断某个 Agent 进程是否仍在运行，用于任务进度通知的进程存活兜底（见 [需求文档 4.3.1](./01-requirements.md)）。
+判断某个 Agent 进程是否仍在运行，用于任务进度通知的进程存活兜底（见 [产品需求 4.3.1](../../01-需求/01-产品需求.md)）。
 
 能力：
 
@@ -341,7 +341,7 @@ export interface ProcessProbe {
 
 ## 5. ProbeResult 标准模型
 
-probes 层所有判断都应返回结构化结果，而不是只返回 boolean。
+本地探针层的所有判断都应返回结构化结果，而不是只返回布尔值。
 
 ```ts
 export interface ProbeResult<T> {
@@ -354,45 +354,45 @@ export interface ProbeResult<T> {
 }
 ```
 
-这样上层可以解释“为什么认为这是 skill”或“为什么认为这个 MCP 配置有风险”。
+这样上层可以解释“为什么认为这是技能”或“为什么认为这个 MCP 配置有风险”。
 
-## 6. 上层如何使用 probes
+## 6. 上层如何使用本地探针
 
-### 6.1 inventory 使用 probes
+### 6.1 能力盘点使用本地探针
 
 ```text
-inventory scanner
-  -> system probe 找配置目录
-  -> file probe 扫描候选文件
-  -> config probe 解析配置
-  -> skill probe 判断 skill
-  -> mcp probe 判断 MCP
-  -> secret probe 脱敏
-  -> storage
+能力盘点扫描器
+  -> 系统探针查找配置目录
+  -> 文件探针扫描候选文件
+  -> 配置探针解析配置
+  -> 技能探针判断技能
+  -> MCP 探针判断 MCP
+  -> 敏感信息探针脱敏
+  -> 存储
 ```
 
-### 6.2 integration 使用 probes
+### 6.2 集成适配器使用本地探针
 
 ```text
-codex adapter
-  -> command probe 检查 codex
-  -> config probe 读取 Codex 配置
-  -> file probe 检查配置路径
-  -> mcp/skill probe 发现相关能力
+Codex 适配器
+  -> 命令探针检查 codex
+  -> 配置探针读取 Codex 配置
+  -> 文件探针检查配置路径
+  -> MCP/技能探针发现相关能力
 ```
 
-### 6.3 analyzer 使用 probes
+### 6.3 分析器使用本地探针
 
 ```text
-security analyzer
-  -> secret probe 检查敏感信息
-  -> mcp probe 判断 MCP 外联风险
-  -> command probe 判断命令是否存在或可疑
+安全分析器
+  -> 敏感信息探针检查敏感信息
+  -> MCP 探针判断 MCP 外联风险
+  -> 命令探针判断命令是否存在或可疑
 ```
 
 ## 7. 不确定功能的扩展方向
 
-当前“系统判断、是否为 skill 判断”等功能还不完全明确，因此 probes 层应设计成可扩展。
+当前“系统判断、是否为技能判断”等功能还不完全明确，因此本地探针层应设计成可扩展。
 
 未来可以新增：
 
@@ -400,7 +400,7 @@ security analyzer
 - `ProjectProbe`：判断项目类型、包管理器、语言栈。
 - `NetworkProbe`：检查本地端口、代理连通性。
 - `PermissionProbe`：判断文件是否可读写、配置是否可备份。
-- `VersionProbe`：判断工具版本是否兼容某个 adapter。
+- `VersionProbe`：判断工具版本是否兼容某个适配器。
 - `PortProbe`：检查 `localhost:8080` 是否可用。
 - `PathRiskProbe`：判断配置是否引用危险路径或不存在路径。
 
@@ -425,34 +425,62 @@ packages/probes/
 
 ## 9. MVP 范围
 
-第一版 probes 层建议只做：
+第一版本地探针层建议只做：
 
-- system probe
-- file probe
-- command probe
-- config probe
-- skill probe
-- mcp probe
-- secret probe
-- process probe（仅"进程是否存在"，用于任务终态兜底）
+- 系统探针
+- 文件探针
+- 命令探针
+- 配置探针
+- 技能探针
+- MCP 探针
+- 敏感信息探针
+- 进程探针（仅“进程是否存在”，用于任务终态兜底）
 
 暂不做：
 
-- network probe
-- complex project probe
+- 网络探针
+- 复杂项目探针
 - 全量插件风险分析
 - 自动修复配置
 - 复杂命令安全策略
 
 ## 10. 实现原则
 
-1. probes 层只采集事实和给出判断，不做业务决策。
-2. 所有判断尽量返回 confidence 和 reasons。
+1. 本地探针层只采集事实和给出判断，不做业务决策。
+2. 所有判断尽量返回置信度和判断理由。
 3. 不要全盘扫描。
 4. 不要读取无关大文件。
 5. 不要保存敏感明文。
-6. 不要把某个 Agent 的配置规则写死在通用 probe 里。
-7. 工具特定路径由 integration 提供，probe 负责执行通用判断。
+6. 不要把某个 Agent 的配置规则写死在通用探针里。
+7. 工具特定路径由集成适配器提供，探针负责执行通用判断。
 8. 扫描失败不应中断整体流程。
-9. 配置解析要使用结构化 parser。
+9. 配置解析要使用结构化解析器。
 10. 上层 UI 应能展示判断依据，方便用户信任结果。
+
+## 11. 代码目录映射
+
+- `packages/probes/src/system`：系统、用户目录、工作区和命令行环境判断。
+- `packages/probes/src/file`：文件状态、目录枚举和受限文本读取。
+- `packages/probes/src/command`：命令存在性、可执行路径和受控版本探测。
+- `packages/probes/src/config`：JSON、JSONC、TOML、YAML 等配置解析。
+- `packages/probes/src/skill`：技能目录识别和元数据读取。
+- `packages/probes/src/mcp`：MCP 服务器候选提取和风险判断。
+- `packages/probes/src/plugin`：插件目录和清单识别。
+- `packages/probes/src/secret`：敏感字段识别与递归脱敏。
+- `packages/probes/src/process`：进程存活与最小进程信息读取。
+
+## 12. 测试设计
+
+- 系统和文件探针：覆盖跨平台路径、缺失文件、权限错误、扫描深度和大文件限制。
+- 命令探针：覆盖命令存在、不存在、超时和未列入允许范围的版本参数。
+- 配置探针：覆盖有效配置、语法错误、错误行列信息和 JSONC 注释保留要求。
+- 技能、MCP 和插件探针：覆盖高、中、低置信度结果及判断理由。
+- 敏感信息探针：覆盖常见密钥模式、嵌套对象脱敏和环境变量值隐藏。
+- 进程探针：覆盖存活、不存在、权限不足和无法可靠关联时的降级行为。
+
+## 13. 风险与待办
+
+- 跨平台命令和权限语义不同，探针结果必须保留平台信息和错误原因。
+- 版本探测命令必须由集成适配器明确声明，不能拼接未经校验的用户输入。
+- 置信度模型需要随真实样本校准，不能把启发式判断当成确定事实。
+- 网络探针、复杂项目识别和主动修复配置暂不进入第一版。

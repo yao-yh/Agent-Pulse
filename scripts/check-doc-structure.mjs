@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
-const docPath = "doc/07-implementation-plan.md";
+const docPath = "doc/02-架构/02-实现计划与代码结构.md";
 const doc = readFileSync(docPath, "utf8");
 const roots = ["apps", "packages", "plugins"];
 const missing = [];

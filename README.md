@@ -30,7 +30,7 @@ agent-pulse doctor
 
 `install` defaults to workspace scope. User-level changes require explicit confirmation flags in the implementation path.
 
-For Chinese CLI and Web Console usage instructions about routing Codex, Claude Code, and OpenCode through the local AgentPulse proxy, see `doc/08-agent-proxy-config-usage.md`.
+For Chinese CLI and Web Console usage instructions about routing Codex, Claude Code, and OpenCode through the local AgentPulse proxy, see `doc/03-模块详细设计/01-代理与集成/02-配置使用指南.md`.
 
 ## Local APIs
 
@@ -67,4 +67,4 @@ Dependencies are kept as new as possible while preserving the current local runt
 - `@vitejs/plugin-react` stays on `4.7.x`; `5+` requires Node `20.19+` or `22.12+`.
 - `commander` stays on `14.x`; `15+` requires Node `22.12+`.
 
-Concrete implementation details live in `doc/07-implementation-plan.md`; keep that file synchronized with the real business directory structure as required by `AGENTS.md`.
+Concrete implementation details live in `doc/02-架构/02-实现计划与代码结构.md`; keep that file synchronized with the real business directory structure as required by `AGENTS.md`.
